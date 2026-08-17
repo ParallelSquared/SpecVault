@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { PRIMARY_FIELDS, SECONDARY_FIELDS, FILTER_ONLY_FIELDS } from './libraryFields';
+import { libraryUrl } from './api';
 
 function FilterBar({ filters, onChange, fieldOptions }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -15,7 +16,7 @@ function FilterBar({ filters, onChange, fieldOptions }) {
     if (!hashLookupPath) return;
     setHashLookupStatus('Hashing...');
     try {
-      const res = await fetch('http://127.0.0.1:8000/libraries/hash-file', {
+      const res = await fetch(libraryUrl('hash-file'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: hashLookupPath }),

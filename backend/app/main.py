@@ -5,7 +5,7 @@ from .routers import libraries
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Library Tool API")
+app = FastAPI(title="SpecVault API")
 
 app.add_middleware(
     CORSMiddleware,

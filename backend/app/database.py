@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./library_tool.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./specvault.db")
 
 # check_same_thread=False is needed for SQLite specifically —
 # it allows the connection to be used across the threads FastAPI spawns per request.

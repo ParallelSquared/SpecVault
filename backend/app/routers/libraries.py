@@ -1,15 +1,13 @@
-import os
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from typing import List
-import re
-import polars as pl
-from typing import Optional, List
-from datetime import datetime
 import hashlib
-import io
+import os
+import re
+from datetime import datetime
+from typing import List, Optional
 
+import polars as pl
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
@@ -59,18 +57,8 @@ def _read_library_df(path: str) -> pl.DataFrame:
         raise ValueError("None of the expected columns were found in this file")
 
     lf = lf.select(needed)  # only pull the handful of columns we actually need
-    return lf.collect(streaming=True)  # streaming keeps memory bounded even for huge files
+    return lf.collect(engine="streaming")  # streaming keeps memory bounded even for huge files
 
-# def _read_library_df(path: str) -> pl.DataFrame:
-#     ext = os.path.splitext(path)[1].lower()
-#     if ext in (".tsv", ".txt"):
-#         return pl.read_csv(path, separator="\t")
-#     elif ext == ".csv":
-#         return pl.read_csv(path)
-#     elif ext == ".parquet":
-#         return pl.read_parquet(path)
-#     else:
-#         raise ValueError(f"Unsupported file extension: {ext}")
 
 def _get_column(df, canonical):
     return next((col for col in COLUMN_ALIASES[canonical] if col in df.columns), None)
@@ -223,42 +211,6 @@ def analyze_library(payload: schemas.AnalyzeRequest):
         warning=warning,
     )
 
-# # IMPORTANT: declare before /{library_id}
-# @router.post("/analyze", response_model=schemas.AnalyzeResponse)
-# def analyze_library(payload: schemas.AnalyzeRequest):
-#     path = payload.path.strip()
-#     if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
-#         path = path[1:-1].strip()
-
-#     if not os.path.exists(path):
-#         raise HTTPException(status_code=400, detail="File not found at that path")
-
-#     try:
-#         df = _read_library_df(path)
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
-
-
-#     warning = None
-
-#     missing = _find_missing_columns(df)
-
-#     if missing:
-#         warning = (
-#             "Missing expected columns, some fields could not be detected: "
-#             + ", ".join(sorted(missing))
-#         )
-        
-#     return schemas.AnalyzeResponse(
-#         precursors=_determine_precursors(df),
-#         proteins=_determine_proteins(df),
-#         protease=_determine_protease(df),
-#         carbamidomethylated=_determine_carbamidomethylated(df),
-#         ptms=_determine_mods(df),
-#         tags=_determine_tags(df),
-#         warning=warning,
-#     )
-
 @router.post("/hash-file")
 def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since it's just {path: str}
     path = payload.path.strip()
@@ -357,18 +309,6 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
     db.refresh(library)
     return _to_response(library)
 
-# @router.post("/", response_model=schemas.LibraryResponse, status_code=201)
-# def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)):
-#     db_library = models.Library(**library.model_dump())
-#     db.add(db_library)
-#     try:
-#         db.commit()
-#     except IntegrityError:
-#         db.rollback()
-#         raise HTTPException(status_code=409, detail="A library with this path already exists")
-#     db.refresh(db_library)
-#     return _to_response(db_library)
-
 @router.get("/", response_model=List[schemas.LibraryResponse])
 def list_libraries(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     rows = db.query(models.Library).offset(skip).limit(limit).all()
@@ -380,21 +320,6 @@ def get_library(library_id: int, db: Session = Depends(get_db)):
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
     return _to_response(library)
-
-# @router.patch("/{library_id}", response_model=schemas.LibraryResponse)
-# def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session = Depends(get_db)):
-#     library = db.query(models.Library).filter(models.Library.id == library_id).first()
-#     if not library:
-#         raise HTTPException(status_code=404, detail="Library not found")
-#     for field, value in updates.model_dump(exclude_unset=True).items():
-#         setattr(library, field, value)
-#     try:
-#         db.commit()
-#     except IntegrityError:
-#         db.rollback()
-#         raise HTTPException(status_code=409, detail="A library with this path already exists")
-#     db.refresh(library)
-#     return _to_response(library)
 
 @router.delete("/{library_id}", status_code=204)
 def delete_library(library_id: int, db: Session = Depends(get_db)):

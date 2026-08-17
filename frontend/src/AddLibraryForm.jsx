@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { LIBRARY_FIELDS, FIELD_GROUPS } from './libraryFields';
 import ComboBoxField from './ComboBoxField';
 import MultiComboBoxField from './MultiComboBoxField';
+import { libraryUrl } from './api';
 
 const emptyForm = () =>
   Object.fromEntries(LIBRARY_FIELDS.map((f) => [f.name, f.type === 'multicombobox' ? [] : '']));
@@ -36,7 +37,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     setAnalyzing(true);
     setAnalyzeMessage(null);
     try {
-      const res = await fetch('http://127.0.0.1:8000/libraries/analyze', {
+      const res = await fetch(libraryUrl('analyze'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: formData.path }),
@@ -79,7 +80,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     );
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/libraries/', {
+      const res = await fetch(libraryUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

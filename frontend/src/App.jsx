@@ -3,6 +3,7 @@ import AddLibraryForm from './AddLibraryForm';
 import FilterBar from './FilterBar';
 import { PRIMARY_FIELDS, SECONDARY_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
+import { libraryUrl } from './api';
 
 
 const defaultFilters = () => {
@@ -31,7 +32,7 @@ function App() {
   const [expandedId, setExpandedId] = useState(null);
 
   const fetchLibraries = () => {
-    fetch('http://127.0.0.1:8000/libraries/')
+    fetch(libraryUrl())
       .then((res) => {
         if (!res.ok) throw new Error(`Server responded with ${res.status}`);
         return res.json();
@@ -40,15 +41,8 @@ function App() {
       .catch((err) => setError(err.message));
   };
 
-  // const fetchFieldOptions = () => {
-  //   fetch('http://127.0.0.1:8000/libraries/options')
-  //     .then((res) => res.json())
-  //     .then((data) => setFieldOptions(data))
-  //     .catch(() => {});
-  // };
-
   const fetchFieldOptions = () => {
-    fetch('http://127.0.0.1:8000/libraries/options')
+    fetch(libraryUrl('options'))
       .then((res) => res.json())
       .then((data) => setFieldOptions((prev) => ({ ...prev, ...data })))
       .catch(() => {});
@@ -91,30 +85,9 @@ function App() {
     });
   }, [libraries, filters]);
 
-  // const filteredLibraries = useMemo(() => {
-  //   return libraries.filter((lib) => {
-  //     return ALL_DISPLAY_FIELDS.every((field) => {
-  //       const filterValue = filters[field.name];
-  //       if (!filterValue) return true;
-  //       if (field.filterType === 'text') {
-  //         const cellValue = (lib[field.name] || '').toString().toLowerCase();
-  //         return cellValue.includes(filterValue.toLowerCase());
-  //       }
-  //       if (field.filterType === 'select') return lib[field.name] === filterValue;
-  //       if (field.filterType === 'multiselect') return (lib[field.name] || []).includes(filterValue);
-  //       if (field.filterType === 'boolean') {
-  //         if (filterValue === 'all') return true;
-  //         if (filterValue === 'exists') return lib[field.name] === true;
-  //         if (filterValue === 'missing') return lib[field.name] === false;
-  //       }
-  //       return true;
-  //     });
-  //   });
-  // }, [libraries, filters]);
-
   return (
     <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '1.5rem', fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Spectral Libraries</h1>
+      <h1>SpecVault</h1>
 
       <nav style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem' }}>
         <button onClick={() => setView('browse')} style={{ fontWeight: view === 'browse' ? 'bold' : 'normal' }}>
