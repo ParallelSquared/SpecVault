@@ -1,0 +1,57 @@
+export const LIBRARY_FIELDS = [
+  // --- Core Info ---
+  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true },
+  { name: 'creator', label: 'Creator', type: 'combobox', required: true, filterType: 'select', group: 'Core Info', primary: true },
+  { name: 'project', label: 'Project', type: 'combobox', required: false, filterType: 'select', group: 'Core Info', primary: false },
+  { name: 'tags', label: 'Tags', type: 'multicombobox', required: true, filterType: 'multiselect', group: 'Core Info', primary: true },
+  { name: 'precursors', label: 'Precursors', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false },
+  { name: 'proteins', label: 'Proteins', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false },
+
+  // --- Method Info ---
+  { name: 'in_silico', label: 'In-Silico', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'instrument', label: 'Instrument', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'acquisition_type', label: 'Acquisition Type', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'search_algorithm', label: 'Search Algorithm', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'finetuning', label: 'Finetuning', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'protease', label: 'Protease', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: true },
+  {
+    name: 'carbamidomethylated', label: 'Carbamidomethylated', type: 'boolean',
+    required: false, filterType: 'boolean', trueLabel: 'Yes', falseLabel: 'No',
+    group: 'Method Info', primary: false,
+  },
+  { name: 'ptms', label: 'PTM(s)', type: 'multicombobox', required: false, filterType: 'multiselect', group: 'Method Info', primary: false },
+
+  // --- Sample Info ---
+  { name: 'species', label: 'Species', type: 'combobox', required: false, filterType: 'select', group: 'Sample Info', primary: true },
+  { name: 'cell_types', label: 'Cell Type(s)', type: 'multicombobox', required: false, filterType: 'multiselect', group: 'Sample Info', primary: false },
+  { name: 'tissues', label: 'Tissue(s)', type: 'multicombobox', required: false, filterType: 'multiselect', group: 'Sample Info', primary: false },
+
+
+  // --- Files & Notes ---
+  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
+  { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
+  { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
+];
+
+export const FILTER_ONLY_FIELDS = [
+  { name: 'content_hash', label: 'Content Hash', filterType: 'text' },
+];
+
+export const COMPUTED_FIELDS = [
+  {
+    name: 'path_exists', label: 'Found', filterType: 'boolean',
+    default: 'exists', trueLabel: 'Found', falseLabel: 'Missing', primary: false,
+  },
+  { name: 'updated_at', label: 'Last Edit', filterType: null, primary: true },
+  { name: 'file_format', label: 'File Format', filterType: 'select', primary: false },
+  { name: 'file_size', label: 'File Size', filterType: null, primary: false },
+];
+
+export const ALL_DISPLAY_FIELDS = [...LIBRARY_FIELDS, ...COMPUTED_FIELDS];
+export const PRIMARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => f.primary);
+export const SECONDARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => !f.primary);
+
+export const FIELD_GROUPS = ['Core Info', 'Method Info', 'Sample Info', 'Files & Notes'];
+
+// Everything filterable, including hidden-from-display fields
+export const ALL_FILTERABLE_FIELDS = [...ALL_DISPLAY_FIELDS, ...FILTER_ONLY_FIELDS];
