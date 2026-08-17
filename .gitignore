@@ -1,3 +1,26 @@
-# Local database
-library_tool.db
-SpecLibData/venv/
+# --- Python ---
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# --- Secrets / local config ---
+.env
+.env.local
+
+# --- Local database ---
+*.db
+*.db-journal
+
+# --- Node ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
