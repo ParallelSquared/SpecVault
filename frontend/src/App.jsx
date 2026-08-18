@@ -87,7 +87,9 @@ function App() {
 
   return (
     <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '1.5rem', fontFamily: 'system-ui, sans-serif' }}>
-      <h1>SpecVault</h1>
+      <h1 style={{ margin: '0 0 1.5rem' }}>
+        <img src="/logo-full.svg" alt="SpecVault" style={{ height: '96px', width: 'auto', display: 'block' }} />
+      </h1>
 
       <nav style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem' }}>
         <button onClick={() => setView('browse')} style={{ fontWeight: view === 'browse' ? 'bold' : 'normal' }}>
