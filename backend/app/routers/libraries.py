@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import List, Optional
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,11 @@ from .. import models, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
+
+# Page size for GET /libraries/. The old default of 100 was applied silently,
+# so a catalog of 101 libraries looked exactly like a catalog of 100.
+DEFAULT_PAGE_SIZE = 500
+MAX_PAGE_SIZE = 2000
 
 COLUMN_ALIASES = {
     "Modified.Sequence": [
@@ -63,93 +69,119 @@ def _read_library_df(path: str) -> pl.DataFrame:
 def _get_column(df, canonical):
     return next((col for col in COLUMN_ALIASES[canonical] if col in df.columns), None)
 
+# Every helper below reads the WHOLE column. They used to score a "sample" of
+# df[col].unique().to_list()[:1000], but .unique() makes no ordering promise, so
+# the same file analysed twice could yield different PTMs or a different
+# carbamidomethylation flag. Whole-column polars expressions are both
+# deterministic and considerably faster than looping in Python.
+
+UNIMOD_PATTERN = r"UniMod:\d+"
+CARBAMIDOMETHYL = "UniMod:4"  # compared exactly, so UniMod:40 is not a match
+TAG_OPTIONS = ["PSMtag", "dimethyl", "SILAC", "K_6C13", "diethyl", "mtraq"]
+
+PROTEASES = {
+    "Trypsin":      {"residues": {"K", "R"}, "side": "C"},
+    "GluC":         {"residues": {"E"},      "side": "C"},
+    "ArgC":         {"residues": {"R"},      "side": "C"},
+    "AspN":         {"residues": {"D"},      "side": "N"},
+    "LysC":         {"residues": {"K"},      "side": "C"},
+    "Chymotrypsin": {"residues": {"F", "W", "Y"}, "side": "C"},
+}
+
+# A protease is only named if the best-fitting rule explains at least this share
+# of peptide termini. Without a floor, non-enzymatic peptides still produced a
+# confident-looking answer off a near-zero score.
+MIN_PROTEASE_CONFIDENCE = 0.6
+
+
+def _unique_sequences(df: pl.DataFrame, canonical: str) -> Optional[pl.Series]:
+    """Distinct non-null, non-empty values of a sequence column; None if absent."""
+    col = _get_column(df, canonical)
+    if col is None:
+        return None
+    seqs = df[col].drop_nulls().unique()
+    return seqs.filter(seqs.str.len_chars() > 0)
+
+
+def _unimod_accessions(sequences: pl.Series) -> set:
+    """Every distinct UniMod accession appearing in the sequences."""
+    if sequences.is_empty():
+        return set()
+    return set(sequences.str.extract_all(UNIMOD_PATTERN).explode().drop_nulls().to_list())
+
+
 def _determine_precursors(df: pl.DataFrame) -> Optional[int]:
-    modified_col =  _get_column(df, "Modified.Sequence")
-    charge_col =  _get_column(df, "Precursor.Charge")
+    modified_col = _get_column(df, "Modified.Sequence")
+    charge_col = _get_column(df, "Precursor.Charge")
 
     if modified_col is None or charge_col is None:
         return None
 
-    return (df.select([pl.col(modified_col), pl.col(charge_col)]).unique().height)
+    return (
+        df.select([pl.col(modified_col), pl.col(charge_col)])
+        .drop_nulls()
+        .unique()
+        .height
+    )
+
 
 def _determine_proteins(df: pl.DataFrame) -> Optional[int]:
     col = _get_column(df, "Protein.Group")
     if col is None:
         return None
-    return df[col].str.split(";").explode(empty_as_null=False).n_unique()
+    # Null and empty groups are not proteins; n_unique() used to count them as one.
+    groups = df[col].drop_nulls().str.split(";").explode().str.strip_chars().drop_nulls()
+    return groups.filter(groups != "").n_unique()
 
 
 def _determine_protease(df: pl.DataFrame) -> Optional[str]:
-    col = _get_column(df, "Stripped.Sequence")
-    if col is None:
+    peptides = _unique_sequences(df, "Stripped.Sequence")
+    if peptides is None or peptides.is_empty():
         return None
-    
-    stripped_sequences = df[col].unique().to_list()[:1000]
-   
-    proteases = {
-        "Trypsin":      {"residues": {"K", "R"}, "side": "C"},
-        "GluC":         {"residues": {"E"},      "side": "C"},
-        "ArgC":         {"residues": {"R"},      "side": "C"},
-        "AspN":         {"residues": {"D"},      "side": "N"},
-        "LysC":         {"residues": {"K"},      "side": "C"},
-        "Chymotrypsin": {"residues": {"F", "W", "Y"}, "side": "C"},
-    }
-    scores = {}
-    for name, rule in proteases.items():
-        matches = total = 0
-        for pep in stripped_sequences:
-            if not pep:
-                continue
-            aa = pep[0] if rule["side"] == "N" else pep[-1]
-            matches += aa in rule["residues"]
-            total += 1
-        scores[name] = matches / total if total else 0
 
-    if not scores:
-        return None
+    total = peptides.len()
+    n_term = peptides.str.slice(0, 1)
+    c_term = peptides.str.slice(-1, 1)
+
+    scores = {}
+    for name, rule in PROTEASES.items():
+        terminus = n_term if rule["side"] == "N" else c_term
+        scores[name] = terminus.is_in(sorted(rule["residues"])).sum() / total
+
     max_score = max(scores.values())
+    if max_score < MIN_PROTEASE_CONFIDENCE:
+        return None  # nothing fits well enough to name a protease
+
+    # Among near-ties prefer the most specific rule: LysC (K) over Trypsin (K/R).
     candidates = [p for p, s in scores.items() if max_score - s <= 0.1]
-    best = min(candidates, key=lambda p: (len(proteases[p]["residues"]), -scores[p]))
-    return best
+    return min(candidates, key=lambda p: (len(PROTEASES[p]["residues"]), -scores[p]))
+
 
 def _determine_carbamidomethylated(df: pl.DataFrame) -> Optional[bool]:
-
-    col = _get_column(df, "Modified.Sequence")
-    if col is None:
+    sequences = _unique_sequences(df, "Modified.Sequence")
+    if sequences is None:
         return None
-        
-    modified_sequences = df[col].unique().to_list()[:1000]
+    return CARBAMIDOMETHYL in _unimod_accessions(sequences)
 
-    return any("UniMod:4" in seq for seq in modified_sequences)
 
 def _determine_mods(df: pl.DataFrame) -> List[str]:
-    col = _get_column(df, "Modified.Sequence")
-    if col is None:
+    sequences = _unique_sequences(df, "Modified.Sequence")
+    if sequences is None:
         return []
-        
-    modified_sequences = df[col].unique().to_list()[:1000]
-    
-    mods = set()
-    for seq in modified_sequences:
-        mods.update(re.findall(r"UniMod:\d+", seq))
-    mods.discard("UniMod:4")  # tracked separately as carbamidomethylation
-    return sorted(mods)
+    mods = _unimod_accessions(sequences)
+    mods.discard(CARBAMIDOMETHYL)  # tracked separately as carbamidomethylation
+    return sorted(mods, key=lambda m: int(m.split(":")[1]))
+
 
 def _determine_tags(df: pl.DataFrame) -> List[str]:
-    col = _get_column(df, "Modified.Sequence")
-    if col is None:
+    sequences = _unique_sequences(df, "Modified.Sequence")
+    if sequences is None:
         return []
-        
-    modified_sequences = df[col].unique().to_list()[:1000]
-    
-    tag_options = ["PSMtag", "dimethyl", "SILAC", "K_6C13", "diethyl", "mtraq"]
-    tags = set()
-    for seq in modified_sequences:
-        for tag in tag_options:
-            if tag.lower() in seq.lower():
-                tags.add(tag)
-
-    return sorted(tags) if tags else ["LF"]
+    tags = sorted(
+        tag for tag in TAG_OPTIONS
+        if sequences.str.contains("(?i)" + re.escape(tag)).any()
+    )
+    return tags if tags else ["LF"]
 
 
 def _find_missing_columns(df: pl.DataFrame) -> list[str]:
@@ -310,8 +342,25 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
     return _to_response(library)
 
 @router.get("/", response_model=List[schemas.LibraryResponse])
-def list_libraries(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    rows = db.query(models.Library).offset(skip).limit(limit).all()
+def list_libraries(
+    response: Response,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+):
+    # X-Total-Count lets the client tell a complete result from a truncated page.
+    # Without it a client that asked for one page rendered it as the whole
+    # catalog. Exposed to the browser via expose_headers in main.py.
+    total = db.query(func.count(models.Library.id)).scalar()
+    response.headers["X-Total-Count"] = str(total)
+
+    rows = (
+        db.query(models.Library)
+        .order_by(models.Library.id)  # stable order, or paging repeats/skips rows
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return [_to_response(row) for row in rows]
 
 @router.get("/{library_id}", response_model=schemas.LibraryResponse)

@@ -15,6 +15,8 @@ const cleanPath = (value) => {
   return v;
 };
 
+const PATH_FIELDS = new Set(['path', 'creation_log_path', 'fasta_path']);
+
 function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   const [formData, setFormData] = useState(emptyForm());
   const [error, setError] = useState(null);
@@ -23,14 +25,26 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   const [analyzeMessage, setAnalyzeMessage] = useState(null);
 
   const handleChange = (name, value) => {
-    const isPathField = name === 'path' || name === 'creation_log_path' || name === 'fasta_path';
-    const cleaned = isPathField && typeof value === 'string' ? cleanPath(value) : value;
-    setFormData((prev) => ({ ...prev, [name]: cleaned }));
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // Paths are cleaned on blur, never on change. cleanPath() trims, and trimming
+  // a controlled input on every keystroke swallowed each space as it was typed:
+  // "D:\\Shared Drive\\My Libs" ended up as "D:\\SharedDrive\\MyLibs".
+  const handleBlur = (name) => {
+    if (!PATH_FIELDS.has(name)) return;
+    setFormData((prev) => {
+      const value = prev[name];
+      if (typeof value !== 'string') return prev;
+      const cleaned = cleanPath(value);
+      return cleaned === value ? prev : { ...prev, [name]: cleaned };
+    });
   };
 
 
   const handleAutoFill = async () => {
-    if (!formData.path) {
+    const path = cleanPath(formData.path || '');
+    if (!path) {
       setAnalyzeMessage('Enter a path first.');
       return;
     }
@@ -40,7 +54,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
       const res = await fetch(libraryUrl('analyze'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: formData.path }),
+        body: JSON.stringify({ path }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -75,7 +89,8 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     const payload = Object.fromEntries(
       Object.entries(formData).map(([k, v]) => {
         if (Array.isArray(v)) return [k, v.length ? v : null];
-        return [k, v === '' ? null : v];
+        const value = PATH_FIELDS.has(k) && typeof v === 'string' ? cleanPath(v) : v;
+        return [k, value === '' ? null : value];
       })
     );
 
@@ -111,6 +126,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
           type="text"
           value={formData[field.name]}
           onChange={(e) => handleChange(field.name, e.target.value)}
+          onBlur={() => handleBlur(field.name)}
           required={field.required}
         />
       )}

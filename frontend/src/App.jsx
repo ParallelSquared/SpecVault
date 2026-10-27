@@ -6,6 +6,12 @@ import { formatBytes, formatDate } from './formatters';
 import { libraryUrl } from './api';
 
 
+// GET /libraries/ is paged. PAGE_SIZE must stay <= the backend's MAX_PAGE_SIZE.
+const PAGE_SIZE = 500;
+// Safety stop so a huge catalog cannot lock up the browser; if we hit it the
+// table says so rather than pretending the first rows are the whole catalog.
+const MAX_ROWS = 5000;
+
 const defaultFilters = () => {
   const defaults = {};
   COMPUTED_FIELDS.forEach((f) => { if (f.default) defaults[f.name] = f.default; });
@@ -30,15 +36,30 @@ function App() {
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState(defaultFilters());
   const [expandedId, setExpandedId] = useState(null);
+  const [totalCount, setTotalCount] = useState(0);
 
-  const fetchLibraries = () => {
-    fetch(libraryUrl())
-      .then((res) => {
+  // Walk every page before rendering. A bare GET /libraries/ returned only the
+  // first page, and the table displayed it as if it were the entire catalog --
+  // so library 101 of 240 simply did not exist as far as the UI was concerned.
+  const fetchLibraries = async () => {
+    try {
+      const collected = [];
+      let reportedTotal = null;
+      for (let skip = 0; skip < MAX_ROWS; skip += PAGE_SIZE) {
+        const res = await fetch(libraryUrl(`?skip=${skip}&limit=${PAGE_SIZE}`));
         if (!res.ok) throw new Error(`Server responded with ${res.status}`);
-        return res.json();
-      })
-      .then((data) => setLibraries(data))
-      .catch((err) => setError(err.message));
+        const header = res.headers.get('X-Total-Count');
+        if (header !== null) reportedTotal = Number(header);
+        const page = await res.json();
+        collected.push(...page);
+        if (page.length < PAGE_SIZE) break;
+      }
+      setLibraries(collected);
+      setTotalCount(reportedTotal ?? collected.length);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const fetchFieldOptions = () => {
@@ -107,7 +128,13 @@ function App() {
       {view === 'browse' && (
         <>
           {error && <p>Error loading libraries: {error}</p>}
-          <h2>Libraries ({filteredLibraries.length} of {libraries.length})</h2>
+          <h2>Libraries ({filteredLibraries.length} of {totalCount})</h2>
+          {libraries.length < totalCount && (
+            <p style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+              ⚠ Loaded the first {libraries.length} of {totalCount} libraries; filters
+              below apply only to those.
+            </p>
+          )}
           <FilterBar filters={filters} onChange={setFilters} fieldOptions={{ ...fieldOptions, file_format: fileFormatOptions }}/>
 
           <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
