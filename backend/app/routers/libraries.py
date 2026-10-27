@@ -53,8 +53,8 @@ def _read_library_df(path: str) -> pl.DataFrame:
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
-    # lf.columns reads only the schema (fast, no data loaded yet)
-    available = lf.columns
+    # collect_schema() reads only the header -- no data is loaded yet
+    available = lf.collect_schema().names()
     needed = []
     for aliases in COLUMN_ALIASES.values():
         needed.extend(a for a in aliases if a in available)
@@ -78,6 +78,15 @@ def _get_column(df, canonical):
 UNIMOD_PATTERN = r"UniMod:\d+"
 CARBAMIDOMETHYL = "UniMod:4"  # compared exactly, so UniMod:40 is not a match
 TAG_OPTIONS = ["PSMtag", "dimethyl", "SILAC", "K_6C13", "diethyl", "mtraq"]
+
+# A tag is a modification name, so it only counts inside a modification
+# annotation -- "(SILAC)", "[Dimethyl]". Searching the bare sequence also
+# matched runs of amino acids: SILAC, MTRAQ, PSMTAG, DIETHYL and DIMETHYL are
+# all spellable in one-letter codes, so the perfectly ordinary unmodified
+# peptide PEPTIDESILACK was reported as a SILAC library. At ~1M precursors
+# that collision is expected to happen several times over by chance, and one
+# hit was enough to mislabel the whole file.
+ANNOTATION_PATTERN = r"\([^()]*\)|\[[^\[\]]*\]"
 
 PROTEASES = {
     "Trypsin":      {"residues": {"K", "R"}, "side": "C"},
@@ -107,7 +116,8 @@ def _unimod_accessions(sequences: pl.Series) -> set:
     """Every distinct UniMod accession appearing in the sequences."""
     if sequences.is_empty():
         return set()
-    return set(sequences.str.extract_all(UNIMOD_PATTERN).explode().drop_nulls().to_list())
+    exploded = sequences.str.extract_all(UNIMOD_PATTERN).explode(empty_as_null=False)
+    return set(exploded.drop_nulls().to_list())
 
 
 def _determine_precursors(df: pl.DataFrame) -> Optional[int]:
@@ -130,7 +140,12 @@ def _determine_proteins(df: pl.DataFrame) -> Optional[int]:
     if col is None:
         return None
     # Null and empty groups are not proteins; n_unique() used to count them as one.
-    groups = df[col].drop_nulls().str.split(";").explode().str.strip_chars().drop_nulls()
+    groups = (
+        df[col].drop_nulls().str.split(";")
+        .explode(empty_as_null=False)
+        .str.strip_chars()
+        .drop_nulls()
+    )
     return groups.filter(groups != "").n_unique()
 
 
@@ -173,13 +188,25 @@ def _determine_mods(df: pl.DataFrame) -> List[str]:
     return sorted(mods, key=lambda m: int(m.split(":")[1]))
 
 
+def _modification_annotations(sequences: pl.Series) -> pl.Series:
+    """The bracketed modification annotations, with their delimiters."""
+    return (
+        sequences.str.extract_all(ANNOTATION_PATTERN)
+        .explode(empty_as_null=False)
+        .drop_nulls()
+    )
+
+
 def _determine_tags(df: pl.DataFrame) -> List[str]:
     sequences = _unique_sequences(df, "Modified.Sequence")
     if sequences is None:
         return []
+    annotations = _modification_annotations(sequences)
+    if annotations.is_empty():
+        return ["LF"]
     tags = sorted(
         tag for tag in TAG_OPTIONS
-        if sequences.str.contains("(?i)" + re.escape(tag)).any()
+        if annotations.str.contains("(?i)" + re.escape(tag)).any()
     )
     return tags if tags else ["LF"]
 

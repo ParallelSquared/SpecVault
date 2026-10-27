@@ -1,0 +1,8 @@
+# Test-only dependencies.
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pytest
+#
+# Pinned on purpose: these decide whether the suite passes, so they should not
+# drift underneath you the way an unpinned requirements.txt can.
+pytest==9.1.1
+httpx2==2.16.0  # starlette's TestClient imports this; it is not optional
