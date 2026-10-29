@@ -71,7 +71,6 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
             ? prev.carbamidomethylated
             : String(body.carbamidomethylated),
         ptms: body.ptms && body.ptms.length ? body.ptms : prev.ptms,
-        content_hash: body.content_hash ?? prev.content_hash,
       }));
       setAnalyzeMessage(body.warning || 'Auto-filled from file. Review before saving.');
     } catch (err) {

@@ -184,8 +184,8 @@ def test_analyze_fills_in_metadata_from_the_file(client, tmp_path):
     assert body["proteins"] == 3
     assert body["carbamidomethylated"] is True
     assert body["ptms"] == []
-    assert body["content_hash"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert body["warning"] is None
+    assert "content_hash" not in body  # hashing is Save's job now
 
 
 def test_analyze_warns_about_missing_columns(client, tmp_path):
@@ -207,13 +207,193 @@ def test_analyze_accepts_a_quoted_path(client, tmp_path):
     assert response.status_code == 200
 
 
-def test_hash_file_matches_analyze(client, tmp_path):
+def test_hash_lookup_finds_what_saving_stored(client, tmp_path):
+    """The filter bar's search by file only works if it hashes the way Save does."""
     path = write_library(tmp_path / "lib.tsv")
-    assert (
-        client.post("/libraries/hash-file", json={"path": str(path)}).json()["content_hash"]
-        == client.post("/libraries/analyze", json={"path": str(path)}).json()["content_hash"]
-    )
+    saved = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    looked_up = client.post("/libraries/hash-file", json={"path": str(path)}).json()
+    assert looked_up["content_hash"] == saved["content_hash"]
+    assert saved["content_hash"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_hash_file_reports_a_missing_file(client):
     assert "error" in client.post("/libraries/hash-file", json={"path": "D:/nope.tsv"}).json()
+
+
+# ---------------------------------------------------------------- the mod table
+
+import re  # noqa: E402
+
+from app.routers import libraries as lib_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def fresh_mod_tables(monkeypatch):
+    """Each test starts with nothing remembered from an earlier Auto-fill."""
+    monkeypatch.setattr(lib_module, "_MOD_TABLES", lib_module._PerFile())
+    monkeypatch.setattr(lib_module, "_HASHES", lib_module._PerFile())
+
+
+@pytest.fixture
+def hashes(monkeypatch):
+    """How many times a file is hashed."""
+    count = {"n": 0}
+    real = lib_module._hash_file
+
+    def counting(path):
+        count["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(lib_module, "_hash_file", counting)
+    return count
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """How many times a library file is parsed."""
+    count = {"n": 0}
+    real = lib_module._read_library_df
+
+    def counting(path):
+        count["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(lib_module, "_read_library_df", counting)
+    return count
+
+
+def write_mods(path, *sequences):
+    lines = ["Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge"]
+    for seq in sequences:
+        stripped = re.sub(r"\([^()]*\)", "", seq)
+        lines.append(f"{seq}\t{stripped}\tP1\t2")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def table_names(body):
+    return {d["name"] for d in body["mod_details"] or []}
+
+
+def test_saving_builds_the_mod_table_without_auto_fill(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK", "PEPTIDEK")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert table_names(body) == {"UniMod:4"}
+
+
+def test_saving_straight_after_auto_fill_does_not_read_the_file_again(client, tmp_path, reads):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    client.post("/libraries/analyze", json={"path": str(path)})
+    assert reads["n"] == 1
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert reads["n"] == 1
+    assert table_names(body) == {"UniMod:4"}
+
+
+def test_a_different_path_after_auto_fill_gets_its_own_table(client, tmp_path):
+    """Auto-fill on one file, then a different path typed in before saving --
+    the saved library used to inherit the first file's table."""
+    first = write_mods(tmp_path / "first.tsv", "AC(UniMod:4)DEK")
+    second = write_mods(tmp_path / "second.tsv", "PEPM(UniMod:35)TIDEK")
+    client.post("/libraries/analyze", json={"path": str(first)})
+    body = client.post("/libraries/", json={"path": str(second), "creator": "ZC"}).json()
+    assert table_names(body) == {"UniMod:35"}
+
+
+def test_a_file_rewritten_after_auto_fill_is_analysed_again(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    client.post("/libraries/analyze", json={"path": str(path)})
+    write_mods(path, "PEPM(UniMod:35)TIDEK", "AC(UniMod:4)DEK", "ELVISK")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert table_names(body) == {"UniMod:4", "UniMod:35"}
+
+
+def test_a_table_sent_with_the_request_is_ignored(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    fake = [{"name": "invented", "site": "K", "precursors": 1}]
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC", "mod_details": fake}).json()
+    assert table_names(body) == {"UniMod:4"}
+
+
+def test_an_unreachable_path_still_saves_without_a_table(client):
+    response = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"})
+    assert response.status_code == 201
+    assert response.json()["mod_details"] is None
+
+
+def test_changing_the_path_rebuilds_the_table(client, tmp_path):
+    first = write_mods(tmp_path / "first.tsv", "AC(UniMod:4)DEK")
+    second = write_mods(tmp_path / "second.tsv", "PEPM(UniMod:35)TIDEK")
+    created = client.post("/libraries/", json={"path": str(first), "creator": "ZC"}).json()
+    body = client.patch(f"/libraries/{created['id']}", json={"path": str(second)}).json()
+    assert table_names(body) == {"UniMod:35"}
+
+
+def test_the_table_cannot_be_set_by_patch(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    created = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    fake = [{"name": "invented", "site": "K", "precursors": 1}]
+    body = client.patch(f"/libraries/{created['id']}", json={"mod_details": fake}).json()
+    assert table_names(body) == {"UniMod:4"}
+
+
+# ---------------------------------------------------------------- the hash
+
+def sha256_of(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_saving_hashes_the_file_without_auto_fill(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert body["content_hash"] == sha256_of(path)
+
+
+def test_auto_fill_does_not_wait_for_the_hash_and_save_does_not_redo_it(client, tmp_path, hashes):
+    """Auto-fill sets the hash going and returns; Save collects that same hash
+    instead of reading the file a second time."""
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    client.post("/libraries/analyze", json={"path": str(path)})
+    assert lib_module._file_identity(str(path)) in lib_module._HASHES._items  # under way
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert hashes["n"] == 1
+    assert body["content_hash"] == sha256_of(path)
+
+
+def test_a_different_path_after_auto_fill_gets_its_own_hash(client, tmp_path):
+    """Auto-fill on one file, then another path typed in: the saved library used
+    to carry the first file's hash, so a search by file found the wrong entry."""
+    first = write_mods(tmp_path / "first.tsv", "AC(UniMod:4)DEK")
+    second = write_mods(tmp_path / "second.tsv", "PEPM(UniMod:35)TIDEK")
+    client.post("/libraries/analyze", json={"path": str(first)})
+    body = client.post("/libraries/", json={"path": str(second), "creator": "ZC"}).json()
+    assert body["content_hash"] == sha256_of(second)
+
+
+def test_a_file_rewritten_after_auto_fill_is_hashed_again(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    client.post("/libraries/analyze", json={"path": str(path)})
+    write_mods(path, "PEPM(UniMod:35)TIDEK", "AC(UniMod:4)DEK", "ELVISK")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert body["content_hash"] == sha256_of(path)
+
+
+def test_a_hash_sent_with_the_request_is_ignored(client, tmp_path):
+    path = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC",
+                                            "content_hash": "not-a-real-hash"}).json()
+    assert body["content_hash"] == sha256_of(path)
+
+
+def test_changing_the_path_rehashes(client, tmp_path):
+    first = write_mods(tmp_path / "first.tsv", "AC(UniMod:4)DEK")
+    second = write_mods(tmp_path / "second.tsv", "PEPM(UniMod:35)TIDEK")
+    created = client.post("/libraries/", json={"path": str(first), "creator": "ZC"}).json()
+    body = client.patch(f"/libraries/{created['id']}", json={"path": str(second)}).json()
+    assert body["content_hash"] == sha256_of(second)
+
+
+def test_an_unreachable_path_saves_without_a_hash(client):
+    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
+    assert body["content_hash"] is None
+

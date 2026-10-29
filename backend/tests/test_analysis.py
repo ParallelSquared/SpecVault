@@ -189,26 +189,26 @@ def test_mods_empty_when_column_missing():
 @pytest.mark.parametrize(
     "sequence, expected",
     [
-        ("PEPT(SILAC)IDEK", ["SILAC"]),
-        ("PEPT(silac)IDEK", ["SILAC"]),
-        ("PEPT[SILAC]IDEK", ["SILAC"]),
+        ("PEPT(dimethyl)IDEK", ["dimethyl"]),
         ("PEPT(Dimethyl)IDEK", ["dimethyl"]),
+        ("PEPT[dimethyl]IDEK", ["dimethyl"]),
         ("PEPT(mTRAQ)IDEK", ["mtraq"]),
-        ("PEPT(K_6C13)IDEK", ["K_6C13"]),
+        ("PEPT(diethyl)IDEK", ["diethyl"]),
+        ("PEPT(PSMtag)IDEK", ["PSMtag"]),
     ],
-    ids=["paren", "lowercase", "bracket", "dimethyl", "mixed-case", "underscored"],
+    ids=["paren", "mixed-case", "bracket", "mtraq", "diethyl", "psmtag"],
 )
 def test_tags_read_from_modification_annotations(sequence, expected):
     assert lib._determine_tags(modified([sequence])) == expected
 
 
 def test_tag_matched_alongside_other_text_in_the_annotation():
-    assert lib._determine_tags(modified(["PEPT(SILAC K8)IDEK"])) == ["SILAC"]
+    assert lib._determine_tags(modified(["PEPT(Dimethyl K8)IDEK"])) == ["dimethyl"]
 
 
 def test_multiple_tags_sorted():
-    sequences = ["PEPT(SILAC)IDEK", "PEPT(Dimethyl)IDEK"]
-    assert lib._determine_tags(modified(sequences)) == ["SILAC", "dimethyl"]
+    sequences = ["PEPT(mTRAQ)IDEK", "PEPT(Dimethyl)IDEK"]
+    assert lib._determine_tags(modified(sequences)) == ["dimethyl", "mtraq"]
 
 
 @pytest.mark.parametrize(
@@ -329,3 +329,172 @@ def test_hash_file_matches_hashlib(tmp_path):
 
 def test_hash_file_none_for_missing_path(tmp_path):
     assert lib._hash_file(str(tmp_path / "nope.tsv")) is None
+
+
+# ------------------------------------------------- a library missing a mass
+
+def with_masses(rows):
+    """rows: (modified, stripped, [mod masses], charge) -> a library frame."""
+    from app import mods as m
+    built = []
+    for modified_seq, stripped, extra, charge in rows:
+        neutral = sum(m.RESIDUE_MASSES[r] for r in stripped) + m.WATER + sum(extra)
+        built.append((modified_seq, stripped, float(charge),
+                      (neutral + charge * m.PROTON) / charge))
+    return pl.DataFrame(
+        built,
+        schema=["Modified.Sequence", "Stripped.Sequence", "Precursor.Charge", "Precursor.Mz"],
+        orient="row",
+    )
+
+
+def carbamidomethyl_library(mass):
+    return with_masses([
+        ("AC(UniMod:4)DEK", "ACDEK", [mass], 2),
+        ("PEC(UniMod:4)PTIDEK", "PECPTIDEK", [mass], 2),
+        ("AC(UniMod:4)DEC(UniMod:4)K", "ACDECK", [mass, mass], 2),
+        ("PEPTIDEK", "PEPTIDEK", [], 2),
+        ("ELVISLIVESK", "ELVISLIVESK", [], 3),
+    ])
+
+
+def test_a_declared_modification_with_no_mass_is_reported():
+    """Some of these libraries dropped carbamidomethyl's 57.0215 Da while
+    keeping every "(UniMod:4)" in place. Nothing downstream can tell from the
+    annotations alone, and every search run against such a library is wrong by
+    the missing mass on every cysteine."""
+    report = lib._mod_report(carbamidomethyl_library(0.0))
+    assert report.note is not None
+    assert "UniMod:4" in report.note and "57.02146" in report.note
+
+
+def test_the_expected_mass_is_stored_so_the_row_can_show_it():
+    detail = lib._mod_report(carbamidomethyl_library(0.0)).details[0]
+    assert detail["mass"] == pytest.approx(0.0, abs=1e-4)
+    assert detail["expected_mass"] == pytest.approx(57.02146)
+
+
+def test_a_library_that_carries_the_mass_is_not_flagged():
+    report = lib._mod_report(carbamidomethyl_library(57.021464))
+    assert report.note is None
+    assert report.details[0]["mass"] == pytest.approx(57.02146, abs=1e-4)
+
+
+def test_the_mod_table_counts_precursors_not_sequences():
+    """One peptide at two charges is two precursors."""
+    frame = with_masses([
+        ("AC(UniMod:4)DEK", "ACDEK", [57.021464], 2),
+        ("AC(UniMod:4)DEK", "ACDEK", [57.021464], 3),
+    ])
+    assert lib._mod_report(frame).details[0]["precursors"] == 2
+
+
+def test_an_accession_with_no_known_mass_is_still_found():
+    """The UniMod table only checks masses. An accession it does not list is
+    still reported, with the mass the library gives it."""
+    report = lib._mod_report(with_masses([
+        ("PEPT(UniMod:9999)IDEK", "PEPTIDEK", [42.0], 2),
+        ("AC(UniMod:9999)DEK", "ACDEK", [42.0], 2),
+    ]))
+    detail = report.details[0]
+    assert report.ptms == ["UniMod:9999"]
+    assert detail["mass"] == pytest.approx(42.0, abs=1e-4)
+    assert detail["expected_mass"] is None
+    assert report.note is None
+
+
+def test_a_massless_k_gg_is_flagged_like_carbamidomethyl():
+    report = lib._mod_report(with_masses([
+        ("PEPTK(UniMod:121)IDEK", "PEPTKIDEK", [0.0], 2),
+        ("AK(UniMod:121)DEK", "AKDEK", [0.0], 2),
+    ]))
+    assert "UniMod:121" in (report.note or "")
+
+
+def test_the_flag_does_not_depend_on_the_modification_being_common():
+    """Nine precursors out of a library is enough: a median residual over every
+    row would never notice them."""
+    rows = [("AC(UniMod:4)DEK", "ACDEK", [0.0], 2)]
+    rows += [(f"PEPTID{r}K", f"PEPTID{r}K", [], 2) for r in "ACDEFGHIKLMNPQRSTVWY"]
+    assert "UniMod:4" in (lib._mod_report(with_masses(rows)).note or "")
+
+
+# --------------------------------------------------------------- label-free
+
+def test_an_unidentifiable_modification_still_reports_label_free():
+    """A label we cannot name -- "(tag)" in a library with no resolvable mass --
+    leaves the field at LF rather than blank. It is a starting point the user
+    edits, and the mod detail table shows the modification either way."""
+    assert lib._determine_tags(modified(["PEPT(tag)IDEK"])) == ["LF"]
+
+
+def test_a_unimod_ptm_on_its_own_is_label_free():
+    """Oxidation is a modification, not a label."""
+    assert lib._determine_tags(modified(["PEPT(UniMod:35)IDEK"])) == ["LF"]
+
+
+def test_a_named_tag_wins_over_an_unidentified_one():
+    assert lib._determine_tags(modified(["PEPT(Dimethyl)IDEK", "PEPT(tag)IDEK"])) == ["dimethyl"]
+
+
+def test_a_mass_that_is_present_but_wrong_is_not_called_missing():
+    """UniMod:4 weighing what oxidation weighs is a mislabel, not a dropped mass.
+    Calling it "missing" would send someone looking for the wrong fault."""
+    note = lib._mod_report(carbamidomethyl_library(15.994915)).note or ""
+    assert "UniMod lists it as +57.02146" in note
+    assert "missing" not in note
+
+
+def test_a_massless_modification_is_still_called_missing():
+    note = lib._mod_report(carbamidomethyl_library(0.0)).note or ""
+    assert "missing from its precursor m/z" in note
+
+
+# ------------------------------------------------- one row per precursor
+
+HEADER = "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\tProduct.Mz\n"
+
+
+def write_fragments(path, precursors, fragments=6):
+    """A library the way they are written: one row per fragment, every
+    precursor-level column repeated on each."""
+    lines = [HEADER]
+    for modified_seq, stripped, group, charge in precursors:
+        for f in range(fragments):
+            lines.append(f"{modified_seq}\t{stripped}\t{group}\t{charge}\t{200.0 + f}\n")
+    path.write_text("".join(lines), encoding="utf-8")
+    return str(path)
+
+
+def test_fragment_rows_are_collapsed_when_read(tmp_path):
+    path = write_fragments(tmp_path / "lib.tsv", [
+        ("AC(UniMod:4)DEK", "ACDEK", "P1", 2),
+        ("AC(UniMod:4)DEK", "ACDEK", "P1", 3),
+        ("PEPTIDEK", "PEPTIDEK", "P2", 2),
+    ])
+    df = lib._read_library_df(path)
+    assert df.height == 3
+    assert lib._determine_precursors(df) == 3
+
+
+def test_a_precursor_under_two_protein_groups_still_counts_once(tmp_path):
+    """Collapsing keeps distinct rows, not strictly one per precursor -- a
+    target that shares its sequence with a decoy is listed under both groups.
+    Every count must still come out right."""
+    path = write_fragments(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2),
+        ("PEPTIDEK", "PEPTIDEK", "DECOY_P1", 2),
+    ])
+    df = lib._read_library_df(path)
+    assert lib._determine_precursors(df) == 1
+    assert lib._determine_proteins(df) == 2
+
+
+def test_rows_come_back_in_file_order(tmp_path):
+    """The mass fit's sample is seeded against row order; a collapse that
+    shuffled rows would make the same file give different answers."""
+    letters = "ADEFGHILMNPQSTVWY"
+    peptides = [a + b + c + "K" for a in letters for b in letters for c in letters[:4]]
+    path = write_fragments(tmp_path / "lib.tsv", [(p, p, "P1", 2) for p in peptides], fragments=3)
+    assert lib._read_library_df(path)["Modified.Sequence"].to_list() == peptides
+

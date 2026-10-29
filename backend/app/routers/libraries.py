@@ -1,8 +1,11 @@
 import hashlib
 import os
 import re
+import threading
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -10,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import models, mods, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -39,7 +42,16 @@ COLUMN_ALIASES = {
         "Precursor.Charge",
         "PrecursorCharge",
     ],
+    "Precursor.Mz": [
+        "Precursor.Mz",
+        "PrecursorMz",
+    ],
 }
+
+# Precursor.Mz is what lets us work out each modification's mass, but a library
+# without it is still perfectly analysable -- so its absence is not worth
+# warning about the way a missing Protein.Group is.
+OPTIONAL_COLUMNS = {"Precursor.Mz"}
 
 
 def _read_library_df(path: str) -> pl.DataFrame:
@@ -62,8 +74,16 @@ def _read_library_df(path: str) -> pl.DataFrame:
     if not needed:
         raise ValueError("None of the expected columns were found in this file")
 
-    lf = lf.select(needed)  # only pull the handful of columns we actually need
-    return lf.collect(engine="streaming")  # streaming keeps memory bounded even for huge files
+    # A library has one row per fragment, and every column read here describes
+    # the precursor, not the fragment -- so the same values repeat a dozen or
+    # more times per precursor. Collapsing to distinct rows here, once, means no
+    # step after this one ever sees a fragment row: on a 28-million-row library
+    # that is 2.4 million rows and 185 MB instead of 2.2 GB. It changes no answer,
+    # because nothing downstream depends on how often a row repeats, only on
+    # which distinct rows exist. File order is kept so that the mass fit's
+    # seeded sample, and so its result, is the same every time.
+    lf = lf.select(needed).unique(maintain_order=True)
+    return lf.collect(engine="streaming")
 
 
 def _get_column(df, canonical):
@@ -75,18 +95,7 @@ def _get_column(df, canonical):
 # carbamidomethylation flag. Whole-column polars expressions are both
 # deterministic and considerably faster than looping in Python.
 
-UNIMOD_PATTERN = r"UniMod:\d+"
 CARBAMIDOMETHYL = "UniMod:4"  # compared exactly, so UniMod:40 is not a match
-TAG_OPTIONS = ["PSMtag", "dimethyl", "SILAC", "K_6C13", "diethyl", "mtraq"]
-
-# A tag is a modification name, so it only counts inside a modification
-# annotation -- "(SILAC)", "[Dimethyl]". Searching the bare sequence also
-# matched runs of amino acids: SILAC, MTRAQ, PSMTAG, DIETHYL and DIMETHYL are
-# all spellable in one-letter codes, so the perfectly ordinary unmodified
-# peptide PEPTIDESILACK was reported as a SILAC library. At ~1M precursors
-# that collision is expected to happen several times over by chance, and one
-# hit was enough to mislabel the whole file.
-ANNOTATION_PATTERN = r"\([^()]*\)|\[[^\[\]]*\]"
 
 PROTEASES = {
     "Trypsin":      {"residues": {"K", "R"}, "side": "C"},
@@ -112,14 +121,6 @@ def _unique_sequences(df: pl.DataFrame, canonical: str) -> Optional[pl.Series]:
     return seqs.filter(seqs.str.len_chars() > 0)
 
 
-def _unimod_accessions(sequences: pl.Series) -> set:
-    """Every distinct UniMod accession appearing in the sequences."""
-    if sequences.is_empty():
-        return set()
-    exploded = sequences.str.extract_all(UNIMOD_PATTERN).explode(empty_as_null=False)
-    return set(exploded.drop_nulls().to_list())
-
-
 def _determine_precursors(df: pl.DataFrame) -> Optional[int]:
     modified_col = _get_column(df, "Modified.Sequence")
     charge_col = _get_column(df, "Precursor.Charge")
@@ -140,8 +141,10 @@ def _determine_proteins(df: pl.DataFrame) -> Optional[int]:
     if col is None:
         return None
     # Null and empty groups are not proteins; n_unique() used to count them as one.
+    # Split each distinct group once: millions of precursors share a few tens of
+    # thousands of groups, and splitting the same string again changes nothing.
     groups = (
-        df[col].drop_nulls().str.split(";")
+        df[col].drop_nulls().unique().str.split(";")
         .explode(empty_as_null=False)
         .str.strip_chars()
         .drop_nulls()
@@ -172,49 +175,175 @@ def _determine_protease(df: pl.DataFrame) -> Optional[str]:
     return min(candidates, key=lambda p: (len(PROTEASES[p]["residues"]), -scores[p]))
 
 
+class ModReport(NamedTuple):
+    """Everything we can say about a library's modifications, worked out once.
+
+    Tags, PTMs and the detail table are three views of the same analysis, and
+    the analysis reads every sequence in the library -- so it is done once here
+    rather than three times over.
+    """
+    details: List[dict]
+    ptms: List[str]
+    tags: List[str]
+    carbamidomethylated: Optional[bool]
+    note: Optional[str]
+
+
+EMPTY_MOD_REPORT = ModReport([], [], [], None, None)
+
+
+def _ptm_order(name: str):
+    """UniMod accessions in numeric order, then everything else alphabetically."""
+    match = re.fullmatch(r"UniMod:(\d+)", name)
+    return (0, int(match.group(1)), "") if match else (1, 0, name.lower())
+
+
+def _mod_report(df: pl.DataFrame) -> ModReport:
+    if _get_column(df, "Modified.Sequence") is None:
+        return EMPTY_MOD_REPORT
+
+    sites = mods.mod_sites(_precursor_sequences(df))
+    # Read off the mod table rather than scanned for separately, so the flag
+    # and the table can never disagree about whether UniMod:4 is there.
+    carbamidomethylated = any(site.name == CARBAMIDOMETHYL for site in sites)
+    if not sites:
+        return ModReport([], [], ["LF"], carbamidomethylated, None)
+
+    masses, note = _derive_masses(df, sorted({site.name for site in sites}))
+
+    # A tag counts if the library names it -- "(dimethyl-0)" -- or if its mass
+    # and site say so. The mass is what rescues a DIA-NN library that calls its
+    # label nothing more descriptive than "(tag)", and the site is what keeps
+    # the Lys and Arg SILAC labels apart, since 13C(6) weighs the same on both.
+    tags, details = set(), []
+    tagged_names, misweighed = set(), {}
+    for site in sites:
+        mass = masses.get(site.name)
+        expected = mods.expected_mass(site.name)
+        if mass is not None and expected is not None and abs(mass - expected) > mods.MASS_TOLERANCE:
+            misweighed[site.name] = (mass, expected)
+        matched = mods.identify_tag(mass, site.site)
+        # Matched against the annotation's name, never the bare sequence:
+        # SILAC, MTRAQ, PSMTAG, DIETHYL and DIMETHYL are all spellable in amino
+        # acids, so the unmodified peptide PEPTIDESILACK once read as labelled.
+        by_name = sorted(
+            tag for tag in mods.TAG_OPTIONS
+            if re.search("(?i)" + re.escape(tag), site.name)
+        )
+        named = sorted(set(by_name) | set(mods.tag_names(matched)))
+        if named:
+            tagged_names.add(site.name)
+            tags.update(named)
+        details.append({
+            "name": site.name,
+            "site": site.site,
+            "precursors": site.precursors,
+            "mass": round(mass, 5) if mass is not None else None,
+            "identified_as": named[0] if named else None,
+            "channel": matched[0].channel if len(matched) == 1 else None,
+            "expected_mass": round(expected, 5) if expected is not None else None,
+        })
+
+    # A library can name a modification and leave its mass out of the precursor
+    # m/z -- some of these libraries dropped carbamidomethyl's 57.0215 Da while
+    # keeping every "(UniMod:4)" in place. Nothing downstream can detect that
+    # from the annotations alone, and a search run against such a library is
+    # wrong by the missing mass on every cysteine, so it is said out loud.
+    #
+    # A mass that is there but wrong is a different problem -- a mislabelled
+    # annotation, or a library built with another mass for it -- and saying
+    # "missing" about a modification weighing +16 Da would send whoever reads it
+    # looking for the wrong fault.
+    massless = {n: m for n, m in misweighed.items() if abs(m[0]) <= mods.MASS_TOLERANCE}
+    mismatched = {n: m for n, m in misweighed.items() if n not in massless}
+    if massless:
+        listed = "; ".join(
+            f"{name} weighs {found:+.5f} Da here but should weigh {should:+.5f}"
+            for name, (found, should) in sorted(massless.items())
+        )
+        note = " ".join(filter(None, [note, (
+            f"This library declares modifications whose mass is missing from its "
+            f"precursor m/z: {listed}. Anything searched against it will be wrong "
+            f"by that much wherever the modification occurs."
+        )]))
+    if mismatched:
+        listed = "; ".join(
+            f"{name} weighs {found:+.5f} Da here, but UniMod lists it as {should:+.5f}"
+            for name, (found, should) in sorted(mismatched.items())
+        )
+        note = " ".join(filter(None, [note, (
+            f"{listed}. Either the annotation names the wrong modification, or the "
+            f"library was built with a different mass for it."
+        )]))
+
+    ptms = sorted(
+        {site.name for site in sites} - tagged_names - {CARBAMIDOMETHYL},
+        key=_ptm_order,
+    )
+    # No tag found means LF. An unidentified modification does not hold that
+    # back: the field is a starting point the user edits, and the mod detail
+    # table shows what was found either way.
+    return ModReport(details, ptms, sorted(tags) or ["LF"], carbamidomethylated, note)
+
+
+def _precursor_sequences(df: pl.DataFrame) -> pl.Series:
+    """One modified sequence per precursor -- sequence and charge -- so that the
+    mod table counts precursors rather than peptides. Without a charge column
+    there is nothing to tell precursors apart, and it is one per sequence."""
+    modified_col = _get_column(df, "Modified.Sequence")
+    charge_col = _get_column(df, "Precursor.Charge")
+    columns = [modified_col] + ([charge_col] if charge_col else [])
+    sequences = df.select(columns).drop_nulls().unique()[modified_col]
+    return sequences.filter(sequences.str.len_chars() > 0)
+
+
+def _derive_masses(df: pl.DataFrame, names: List[str]):
+    """Each modification's mass, and a note when they could not be worked out.
+    *names* are the modifications already found, so they are not looked for twice."""
+    stripped_col = _get_column(df, "Stripped.Sequence")
+    charge_col = _get_column(df, "Precursor.Charge")
+    mz_col = _get_column(df, "Precursor.Mz")
+    if charge_col is None or mz_col is None:
+        return {}, None
+
+    modified_col = _get_column(df, "Modified.Sequence")
+    stripped = (
+        df[stripped_col] if stripped_col
+        else df[modified_col].str.replace_all(mods.ANNOTATION_PATTERN, "")
+    )
+    masses = mods.derive_masses(df[modified_col], stripped, df[charge_col], df[mz_col], names)
+    if masses:
+        return masses, None
+
+    conflicts = mods.mass_conflicts(df[modified_col], df[charge_col], df[mz_col])
+    if conflicts:
+        return {}, (
+            f"Modification masses could not be resolved: {conflicts:,} precursors "
+            "appear at more than one mass under the same modified sequence, which "
+            "means the library holds several label channels under one set of "
+            "annotation names."
+        )
+    return {}, "Modification masses could not be resolved from the precursor m/z."
+
+
 def _determine_carbamidomethylated(df: pl.DataFrame) -> Optional[bool]:
-    sequences = _unique_sequences(df, "Modified.Sequence")
-    if sequences is None:
-        return None
-    return CARBAMIDOMETHYL in _unimod_accessions(sequences)
+    return _mod_report(df).carbamidomethylated
 
 
 def _determine_mods(df: pl.DataFrame) -> List[str]:
-    sequences = _unique_sequences(df, "Modified.Sequence")
-    if sequences is None:
-        return []
-    mods = _unimod_accessions(sequences)
-    mods.discard(CARBAMIDOMETHYL)  # tracked separately as carbamidomethylation
-    return sorted(mods, key=lambda m: int(m.split(":")[1]))
-
-
-def _modification_annotations(sequences: pl.Series) -> pl.Series:
-    """The bracketed modification annotations, with their delimiters."""
-    return (
-        sequences.str.extract_all(ANNOTATION_PATTERN)
-        .explode(empty_as_null=False)
-        .drop_nulls()
-    )
+    return _mod_report(df).ptms
 
 
 def _determine_tags(df: pl.DataFrame) -> List[str]:
-    sequences = _unique_sequences(df, "Modified.Sequence")
-    if sequences is None:
-        return []
-    annotations = _modification_annotations(sequences)
-    if annotations.is_empty():
-        return ["LF"]
-    tags = sorted(
-        tag for tag in TAG_OPTIONS
-        if annotations.str.contains("(?i)" + re.escape(tag)).any()
-    )
-    return tags if tags else ["LF"]
+    return _mod_report(df).tags
 
 
 def _find_missing_columns(df: pl.DataFrame) -> list[str]:
     missing = []
 
     for canonical, aliases in COLUMN_ALIASES.items():
+        if canonical in OPTIONAL_COLUMNS:
+            continue
         if not any(alias in df.columns for alias in aliases):
             missing.append(canonical)
 
@@ -233,6 +362,107 @@ def _hash_file(path: str) -> Optional[str]:
     return sha256.hexdigest()
     
 
+# The content hash and the mod table are built by the server, for the file
+# actually saved -- the form supplies neither. Each is kept per version of a
+# file, meaning the same path, size and modification time, so the work Auto-fill
+# did is reused at Save, while a file rewritten in between, or a different path
+# typed in after Auto-fill, is read afresh rather than inheriting another
+# file's answers.
+
+
+def _file_identity(path: str) -> Optional[tuple]:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.normcase(os.path.abspath(path)), stat.st_size, stat.st_mtime_ns)
+
+
+class _PerFile:
+    """A small, thread-safe store of one answer per version of a file. FastAPI
+    runs these endpoints on a thread pool, so two Auto-fills can arrive at once."""
+
+    def __init__(self, keep: int = 32):
+        self._items: "OrderedDict[tuple, object]" = OrderedDict()
+        self._lock = threading.Lock()
+        self._keep = keep
+
+    def get_or_make(self, identity: tuple, make):
+        with self._lock:
+            if identity in self._items:
+                self._items.move_to_end(identity)
+                return self._items[identity]
+            value = self._items[identity] = make()
+            while len(self._items) > self._keep:
+                self._items.popitem(last=False)
+            return value
+
+    def put(self, identity: tuple, value) -> None:
+        self.get_or_make(identity, lambda: value)
+
+
+_MOD_TABLES = _PerFile()
+_HASHES = _PerFile()
+
+# Hashing reads every byte of the file. SHA-256 already runs at the fastest
+# the standard library offers here (0.73 GB/s; SHA-1 ties, MD5, BLAKE2b and
+# SHA-512 are slower), and over the PTI share the network is the real limit, so
+# the way to make it cheap is to start it early: Auto-fill sets it going in the
+# background, it runs while the form is filled in, and Save usually just
+# collects the answer. Two workers, so a second Auto-fill is not stuck behind
+# the first one's hash.
+_HASHER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hash")
+
+
+def _start_hash(path: str) -> Optional[Future]:
+    """The hash of the file at *path*, under way. None if there is no file."""
+    identity = _file_identity(path)
+    if identity is None:
+        return None
+    return _HASHES.get_or_make(identity, lambda: _HASHER.submit(_hash_file, path))
+
+
+def _result(job: Optional[Future]) -> Optional[str]:
+    if job is None:
+        return None
+    try:
+        return job.result()
+    except Exception:
+        return None
+
+
+def _remember_mod_table(path: str, details: list) -> None:
+    identity = _file_identity(path)
+    if identity is not None:
+        _MOD_TABLES.put(identity, details)
+
+
+def _build_mod_table(path: str) -> Optional[list]:
+    try:
+        return _mod_report(_read_library_df(path)).details
+    except Exception:
+        return None
+
+
+def _mod_table_for(path: str) -> Optional[list]:
+    """The mod table for the file at *path* as it is now: the one Auto-fill built
+    if the file has not changed since, otherwise a fresh analysis. None when the
+    file cannot be read -- a library on a share that is not mounted is still
+    saved, it just has no table until it is reachable."""
+    identity = _file_identity(path)
+    if identity is None:
+        return None
+    return _MOD_TABLES.get_or_make(identity, lambda: _build_mod_table(path))
+
+
+def _file_facts(path: str):
+    """(content hash, mod table) for the file at *path*. When neither was worked
+    out in advance, the hash reads the file in the background while the parse
+    reads it here, so the two take as long as the slower one, not the sum."""
+    job = _start_hash(path)
+    return _result(job), _mod_table_for(path)
+
+
 @router.post("/analyze", response_model=schemas.AnalyzeResponse)
 def analyze_library(payload: schemas.AnalyzeRequest):
     path = payload.path.strip()
@@ -242,32 +472,38 @@ def analyze_library(payload: schemas.AnalyzeRequest):
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
 
-    content_hash = _hash_file(path)
-    if content_hash is None:
-        raise HTTPException(status_code=400, detail="Could not read file to compute hash")
+    # Not waited for: the hash is Save's to collect, and by then it is done.
+    _start_hash(path)
 
     try:
         df = _read_library_df(path)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
 
-    warning = None
+    # One pass over the modifications, read three ways; it is the expensive
+    # part of the analysis, so it is not repeated per field.
+    report = _mod_report(df)
+    _remember_mod_table(path, report.details)
+
+    notes = []
     missing = _find_missing_columns(df)
     if missing:
-        warning = (
+        notes.append(
             "Missing expected columns, some fields could not be detected: "
             + ", ".join(sorted(missing))
         )
+    if report.note:
+        notes.append(report.note)
 
     return schemas.AnalyzeResponse(
         precursors=_determine_precursors(df),
         proteins=_determine_proteins(df),
         protease=_determine_protease(df),
-        carbamidomethylated=_determine_carbamidomethylated(df),
-        ptms=_determine_mods(df),
-        tags=_determine_tags(df),
-        content_hash=content_hash,
-        warning=warning,
+        carbamidomethylated=report.carbamidomethylated,
+        ptms=report.ptms,
+        tags=report.tags,
+        mod_details=[schemas.ModDetail(**detail) for detail in report.details],
+        warning=" ".join(notes) if notes else None,
     )
 
 @router.post("/hash-file")
@@ -279,7 +515,7 @@ def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since 
     if not os.path.exists(path):
         return {"error": "File not found at that path"}
 
-    file_hash = _hash_file(path)
+    file_hash = _result(_start_hash(path))
     if file_hash is None:
         return {"error": "Could not read file to compute hash"}
 
@@ -338,8 +574,7 @@ def get_field_options(db: Session = Depends(get_db)):
 @router.post("/", response_model=schemas.LibraryResponse, status_code=201)
 def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)):
     data = library.model_dump()
-    if not data.get("content_hash"):
-        data["content_hash"] = _hash_file(data["path"])  # fallback: full separate read, only if auto-fill wasn't used
+    data["content_hash"], data["mod_details"] = _file_facts(data["path"])
     db_library = models.Library(**data)
     db.add(db_library)
     try:
@@ -358,8 +593,8 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
     update_data = updates.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(library, field, value)
-    if "path" in update_data:  # path changed, hash needs recomputing
-        library.content_hash = _hash_file(library.path)
+    if "path" in update_data:  # a different file: its hash and mod table are its own
+        library.content_hash, library.mod_details = _file_facts(library.path)
     try:
         db.commit()
     except IntegrityError:

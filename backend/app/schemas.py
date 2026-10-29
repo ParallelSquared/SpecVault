@@ -2,6 +2,28 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, field_validator
 
+class ModDetail(BaseModel):
+    """One modification at one site, as the library writes it.
+
+    *name* is the library's own spelling -- a DIA-NN export may call its label
+    nothing more descriptive than "tag" -- while *identified_as* is the tag
+    whose mass it matches and *channel* which channel of it. A label we have no
+    definition for still reports its measured *mass*, which is the point: an
+    unrecognised tag should look unrecognised, not be forced onto the nearest
+    channel we happen to know.
+    """
+    name: str
+    site: str                              # "N-term", or a residue letter
+    precursors: int
+    mass: Optional[float] = None           # Da, solved from the precursor m/z
+    identified_as: Optional[str] = None    # e.g. "PSMtag"
+    channel: Optional[str] = None          # e.g. "0", "4"
+    # What the modification should weigh, where that is known. A mass that
+    # disagrees means the library declares the modification without carrying
+    # its mass -- see the analyze warning.
+    expected_mass: Optional[float] = None
+
+
 class LibraryBase(BaseModel):
     path: str
     creator: str
@@ -21,7 +43,6 @@ class LibraryBase(BaseModel):
     creation_log_path: Optional[str] = None
     precursors: Optional[int] = None
     proteins: Optional[int] = None
-    content_hash: Optional[str] = None
     fasta_path: Optional[str] = None
     in_silico: Optional[str] = None
 
@@ -57,13 +78,15 @@ class LibraryUpdate(BaseModel):
     creation_log_path: Optional[str] = None
     precursors: Optional[int] = None
     proteins: Optional[int] = None
-    content_hash: Optional[str] = None
     fasta_path: Optional[str] = None
     in_silico: Optional[str] = None
 
 class LibraryResponse(LibraryBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    # Built by the server from the saved file, never taken from a request
+    content_hash: Optional[str] = None
+    mod_details: Optional[List[ModDetail]] = None
     date_created: datetime
     updated_at: Optional[datetime] = None
     path_exists: bool = False
@@ -81,7 +104,7 @@ class AnalyzeResponse(BaseModel):
     carbamidomethylated: Optional[bool] = None
     ptms: List[str] = []
     tags: List[str] = []
-    content_hash: Optional[str] = None
+    mod_details: List[ModDetail] = []
     warning: Optional[str] = None  # e.g. "file read but some columns missing"
 
 class HashLookupRequest(BaseModel):

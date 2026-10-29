@@ -24,6 +24,7 @@ class Library(Base):
     protease = Column(String, nullable=True)
     carbamidomethylated = Column(Boolean, nullable=True)
     ptms = Column(JSON, nullable=True)              # list[str]
+    mod_details = Column(JSON, nullable=True)       # list[dict], see schemas.ModDetail
     creation_log_path = Column(String, nullable=True)
     precursors = Column(Integer, nullable=True)
     proteins = Column(Integer, nullable=True)
