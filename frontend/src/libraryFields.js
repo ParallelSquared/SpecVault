@@ -45,6 +45,11 @@ export const COMPUTED_FIELDS = [
   { name: 'updated_at', label: 'Last Edit', filterType: null, primary: true },
   { name: 'file_format', label: 'File Format', filterType: 'select', primary: false },
   { name: 'file_size', label: 'File Size', filterType: null, primary: false },
+  {
+    name: 'ion_mobility', label: 'Ion Mobility', filterType: 'boolean',
+    trueLabel: 'Has IM', falseLabel: 'No IM', primary: false,
+  },
+  { name: 'decoys', label: 'Decoys', filterType: null, primary: false },
 ];
 
 export const ALL_DISPLAY_FIELDS = [...LIBRARY_FIELDS, ...COMPUTED_FIELDS];

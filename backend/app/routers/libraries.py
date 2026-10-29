@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import models, mods, schemas
+from .. import library_stats, models, mods, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -69,16 +69,19 @@ def _is_decoy(column: pl.Expr) -> pl.Expr:
     return text.is_in(["1", "1.0", "true"]).fill_null(False)
 
 
-def _read_library_df(path: str) -> pl.DataFrame:
+def _scan_library(path: str) -> pl.LazyFrame:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".tsv", ".txt"):
-        lf = pl.scan_csv(path, separator="\t")
-    elif ext == ".csv":
-        lf = pl.scan_csv(path)
-    elif ext == ".parquet":
-        lf = pl.scan_parquet(path)
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
+        return pl.scan_csv(path, separator="\t")
+    if ext == ".csv":
+        return pl.scan_csv(path)
+    if ext == ".parquet":
+        return pl.scan_parquet(path)
+    raise ValueError(f"Unsupported file extension: {ext}")
+
+
+def _read_library_df(path: str) -> pl.DataFrame:
+    lf = _scan_library(path)
 
     # collect_schema() reads only the header -- no data is loaded yet
     available = lf.collect_schema().names()
@@ -172,7 +175,13 @@ def _determine_proteins(df: pl.DataFrame) -> Optional[int]:
 
 def _determine_protease(df: pl.DataFrame) -> Optional[str]:
     peptides = _unique_sequences(df, "Stripped.Sequence")
-    if peptides is None or peptides.is_empty():
+    if peptides is None:
+        return None
+    return _protease_of(peptides)
+
+
+def _protease_of(peptides: pl.Series) -> Optional[str]:
+    if peptides.is_empty():
         return None
 
     total = peptides.len()
@@ -429,7 +438,7 @@ _HASHES = _PerFile()
 # background, it runs while the form is filled in, and Save usually just
 # collects the answer. Two workers, so a second Auto-fill is not stuck behind
 # the first one's hash.
-_HASHER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hash")
+_BACKGROUND = ThreadPoolExecutor(max_workers=4, thread_name_prefix="file-facts")
 
 
 def _start_hash(path: str) -> Optional[Future]:
@@ -437,7 +446,47 @@ def _start_hash(path: str) -> Optional[Future]:
     identity = _file_identity(path)
     if identity is None:
         return None
-    return _HASHES.get_or_make(identity, lambda: _HASHER.submit(_hash_file, path))
+    return _HASHES.get_or_make(identity, lambda: _BACKGROUND.submit(_hash_file, path))
+
+
+# The library details -- fragments, charges, digest -- are read from fragment
+# rows, which the rest of the analysis never sees. Like the hash they are
+# started at Auto-fill and collected at Save, so neither one waits for them.
+_STATS = _PerFile()
+
+
+def _build_library_stats(path: str) -> Optional[dict]:
+    lf = _scan_library(path)
+    available = lf.collect_schema().names()
+    pick = lambda canonical: next((a for a in COLUMN_ALIASES[canonical] if a in available), None)  # noqa: E731
+    modified, charge = pick("Modified.Sequence"), pick("Precursor.Charge")
+    if modified is None or charge is None:
+        return None
+    decoy = next((c for c in DECOY_COLUMNS if c in available), None)
+    stats, peptides = library_stats.compute(
+        lf, available, modified, charge, pick("Stripped.Sequence"), pick("Precursor.Mz"),
+        _is_decoy(pl.col(decoy)) if decoy else None, mods.ANNOTATION_PATTERN,
+    )
+    protease = _protease_of(peptides)
+    stats["digest"] = (
+        library_stats.digest(peptides, protease, PROTEASES[protease]["residues"], PROTEASES[protease]["side"])
+        if protease else None
+    )
+    return stats
+
+
+def _start_stats(path: str) -> Optional[Future]:
+    identity = _file_identity(path)
+    if identity is None:
+        return None
+
+    def build():
+        try:
+            return _build_library_stats(path)
+        except Exception:
+            return None  # an odd file should not stop the library being saved
+
+    return _STATS.get_or_make(identity, lambda: _BACKGROUND.submit(build))
 
 
 def _result(job: Optional[Future]) -> Optional[str]:
@@ -474,11 +523,13 @@ def _mod_table_for(path: str) -> Optional[list]:
 
 
 def _file_facts(path: str):
-    """(content hash, mod table) for the file at *path*. When neither was worked
-    out in advance, the hash reads the file in the background while the parse
-    reads it here, so the two take as long as the slower one, not the sum."""
-    job = _start_hash(path)
-    return _result(job), _mod_table_for(path)
+    """(content hash, mod table, library stats) for the file at *path*. Whatever
+    was not worked out in advance runs at once: the hash and the stats in the
+    background while the parse happens here, so it takes as long as the slowest
+    of the three, not their sum."""
+    hash_job, stats_job = _start_hash(path), _start_stats(path)
+    mod_table = _mod_table_for(path)
+    return _result(hash_job), mod_table, _result(stats_job)
 
 
 @router.post("/analyze", response_model=schemas.AnalyzeResponse)
@@ -490,8 +541,9 @@ def analyze_library(payload: schemas.AnalyzeRequest):
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
 
-    # Not waited for: the hash is Save's to collect, and by then it is done.
+    # Not waited for: these are Save's to collect, and by then they are done.
     _start_hash(path)
+    _start_stats(path)
 
     try:
         df = _read_library_df(path)
@@ -558,6 +610,11 @@ def _to_response(lib: models.Library) -> schemas.LibraryResponse:
         data.file_size = None
         data.updated_at = None
 
+    precursors = (lib.library_stats or {}).get("precursors") or {}
+    if precursors:
+        data.ion_mobility = precursors.get("ion_mobility") is not None
+        data.decoys = precursors.get("decoys")
+
     return data
 
 # IMPORTANT: this must be declared before the /{library_id} route below,
@@ -592,7 +649,7 @@ def get_field_options(db: Session = Depends(get_db)):
 @router.post("/", response_model=schemas.LibraryResponse, status_code=201)
 def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)):
     data = library.model_dump()
-    data["content_hash"], data["mod_details"] = _file_facts(data["path"])
+    data["content_hash"], data["mod_details"], data["library_stats"] = _file_facts(data["path"])
     db_library = models.Library(**data)
     db.add(db_library)
     try:
@@ -612,7 +669,7 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
     for field, value in update_data.items():
         setattr(library, field, value)
     if "path" in update_data:  # a different file: its hash and mod table are its own
-        library.content_hash, library.mod_details = _file_facts(library.path)
+        library.content_hash, library.mod_details, library.library_stats = _file_facts(library.path)
     try:
         db.commit()
     except IntegrityError:

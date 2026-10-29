@@ -25,6 +25,7 @@ class Library(Base):
     carbamidomethylated = Column(Boolean, nullable=True)
     ptms = Column(JSON, nullable=True)              # list[str]
     mod_details = Column(JSON, nullable=True)       # list[dict], see schemas.ModDetail
+    library_stats = Column(JSON, nullable=True)     # dict, see app/library_stats.py
     creation_log_path = Column(String, nullable=True)
     precursors = Column(Integer, nullable=True)
     proteins = Column(Integer, nullable=True)

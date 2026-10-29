@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, Fragment } from 'react';
 import AddLibraryForm from './AddLibraryForm';
 import FilterBar from './FilterBar';
 import ModDetails from './ModDetails';
+import LibraryDetails from './LibraryDetails';
 import { PRIMARY_FIELDS, SECONDARY_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
 import { libraryUrl } from './api';
@@ -204,6 +205,7 @@ function App() {
                           ))}
                         </div>
                         <ModDetails details={lib.mod_details} />
+                        <LibraryDetails stats={lib.library_stats} />
                       </td>
                     </tr>
                   )}

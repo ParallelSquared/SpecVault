@@ -87,6 +87,9 @@ class LibraryResponse(LibraryBase):
     # Built by the server from the saved file, never taken from a request
     content_hash: Optional[str] = None
     mod_details: Optional[List[ModDetail]] = None
+    library_stats: Optional[dict] = None  # precursors, fragments, digest
+    ion_mobility: Optional[bool] = None   # read off library_stats
+    decoys: Optional[int] = None          # read off library_stats
     date_created: datetime
     updated_at: Optional[datetime] = None
     path_exists: bool = False

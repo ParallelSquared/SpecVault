@@ -232,6 +232,7 @@ def fresh_mod_tables(monkeypatch):
     """Each test starts with nothing remembered from an earlier Auto-fill."""
     monkeypatch.setattr(lib_module, "_MOD_TABLES", lib_module._PerFile())
     monkeypatch.setattr(lib_module, "_HASHES", lib_module._PerFile())
+    monkeypatch.setattr(lib_module, "_STATS", lib_module._PerFile())
 
 
 @pytest.fixture
@@ -396,4 +397,66 @@ def test_changing_the_path_rehashes(client, tmp_path):
 def test_an_unreachable_path_saves_without_a_hash(client):
     body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
     assert body["content_hash"] is None
+
+
+# ---------------------------------------------------------------- library details
+
+@pytest.fixture
+def stat_builds(monkeypatch):
+    """How many times the library details are worked out."""
+    count = {"n": 0}
+    real = lib_module._build_library_stats
+
+    def counting(path):
+        count["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(lib_module, "_build_library_stats", counting)
+    return count
+
+
+def write_im_library(path, im):
+    rows = [
+        "Modified.Sequence\tStripped.Sequence\tPrecursor.Charge\tPrecursor.Mz\tIM\tDecoy\tFragment.Type",
+        f"PEPTIDEK\tPEPTIDEK\t2\t465.24\t{im}\t0\ty",
+        f"PEPTIDEK\tPEPTIDEK\t2\t465.24\t{im}\t0\tb",
+        f"KEDITPEP\tKEDITPEP\t2\t465.24\t{im}\t1\ty",
+    ]
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_saving_builds_the_library_details(client, tmp_path):
+    path = write_im_library(tmp_path / "lib.tsv", 0.9)
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert body["library_stats"]["fragments"]["per_precursor"]["max"] == 2
+    assert body["ion_mobility"] is True
+    assert body["decoys"] == 1
+
+
+def test_a_library_without_ion_mobility_says_so(client, tmp_path):
+    path = write_im_library(tmp_path / "lib.tsv", 0.0)
+    assert client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()["ion_mobility"] is False
+
+
+def test_auto_fill_starts_the_details_and_save_collects_them(client, tmp_path, stat_builds):
+    path = write_im_library(tmp_path / "lib.tsv", 0.9)
+    client.post("/libraries/analyze", json={"path": str(path)})
+    assert lib_module._file_identity(str(path)) in lib_module._STATS._items  # under way
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert stat_builds["n"] == 1
+    assert body["decoys"] == 1
+
+
+def test_changing_the_path_rebuilds_the_details(client, tmp_path):
+    first = write_im_library(tmp_path / "first.tsv", 0.9)
+    second = write_im_library(tmp_path / "second.tsv", 0.0)
+    created = client.post("/libraries/", json={"path": str(first), "creator": "ZC"}).json()
+    body = client.patch(f"/libraries/{created['id']}", json={"path": str(second)}).json()
+    assert body["ion_mobility"] is False
+
+
+def test_an_unreachable_path_saves_without_details(client):
+    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
+    assert body["library_stats"] is None and body["ion_mobility"] is None
 
