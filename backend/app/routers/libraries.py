@@ -53,6 +53,21 @@ COLUMN_ALIASES = {
 # warning about the way a missing Protein.Group is.
 OPTIONAL_COLUMNS = {"Precursor.Mz"}
 
+# Where a library marks its decoys: DIA-NN writes "Decoy", the OpenSWATH-style
+# exports "decoy", both as 0 or 1. Decoys are generated to estimate false
+# discovery, not peptides anyone measured, and counting them inflated every
+# library's precursors by 6-8% -- and, where a decoy kept its target's sequence
+# at a different mass, faked the "several label channels" warning.
+DECOY_COLUMNS = ["Decoy", "decoy"]
+
+
+def _is_decoy(column: pl.Expr) -> pl.Expr:
+    """True for decoy rows, read loosely enough for 1, 1.0, True or "true".
+    A blank counts as a target: dropping rows on a missing value would lose
+    real precursors."""
+    text = column.cast(pl.String).str.strip_chars().str.to_lowercase()
+    return text.is_in(["1", "1.0", "true"]).fill_null(False)
+
 
 def _read_library_df(path: str) -> pl.DataFrame:
     ext = os.path.splitext(path)[1].lower()
@@ -82,6 +97,9 @@ def _read_library_df(path: str) -> pl.DataFrame:
     # because nothing downstream depends on how often a row repeats, only on
     # which distinct rows exist. File order is kept so that the mass fit's
     # seeded sample, and so its result, is the same every time.
+    decoy = next((c for c in DECOY_COLUMNS if c in available), None)
+    if decoy is not None:
+        lf = lf.filter(~_is_decoy(pl.col(decoy)))
     lf = lf.select(needed).unique(maintain_order=True)
     return lf.collect(engine="streaming")
 

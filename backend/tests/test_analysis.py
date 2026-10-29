@@ -478,12 +478,12 @@ def test_fragment_rows_are_collapsed_when_read(tmp_path):
 
 
 def test_a_precursor_under_two_protein_groups_still_counts_once(tmp_path):
-    """Collapsing keeps distinct rows, not strictly one per precursor -- a
-    target that shares its sequence with a decoy is listed under both groups.
-    Every count must still come out right."""
+    """Collapsing keeps distinct rows, not strictly one per precursor, so a
+    precursor listed under two protein groups comes back as two rows. Every
+    count must still come out right."""
     path = write_fragments(tmp_path / "lib.tsv", [
         ("PEPTIDEK", "PEPTIDEK", "P1", 2),
-        ("PEPTIDEK", "PEPTIDEK", "DECOY_P1", 2),
+        ("PEPTIDEK", "PEPTIDEK", "P2", 2),
     ])
     df = lib._read_library_df(path)
     assert lib._determine_precursors(df) == 1
@@ -497,4 +497,80 @@ def test_rows_come_back_in_file_order(tmp_path):
     peptides = [a + b + c + "K" for a in letters for b in letters for c in letters[:4]]
     path = write_fragments(tmp_path / "lib.tsv", [(p, p, "P1", 2) for p in peptides], fragments=3)
     assert lib._read_library_df(path)["Modified.Sequence"].to_list() == peptides
+
+
+# --------------------------------------------------------------- decoys
+
+def write_with_decoys(path, rows, column="Decoy"):
+    """rows: (modified, stripped, group, charge, mz, decoy value)."""
+    lines = ["Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge"
+             f"\tPrecursor.Mz\t{column}\n"]
+    for modified_seq, stripped, group, charge, mz, decoy in rows:
+        for fragment in range(3):
+            lines.append(f"{modified_seq}\t{stripped}\t{group}\t{charge}\t{mz}\t{decoy}\n")
+    path.write_text("".join(lines), encoding="utf-8")
+    return str(path)
+
+
+def test_decoys_are_not_counted(tmp_path):
+    path = write_with_decoys(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2, 465.24, 0),
+        ("ACDEK", "ACDEK", "P2", 2, 290.12, 0),
+        ("KEDITPEP", "KEDITPEP", "DECOY_P1", 2, 465.24, 1),
+    ])
+    df = lib._read_library_df(path)
+    assert lib._determine_precursors(df) == 2
+    assert lib._determine_proteins(df) == 2
+
+
+@pytest.mark.parametrize("column", ["Decoy", "decoy"])
+@pytest.mark.parametrize(
+    "target, decoy",
+    [("0", "1"), ("False", "True"), ("false", "true"), ("0.0", "1.0")],
+    ids=["integer", "bool", "lowercase-bool", "float"],
+)
+def test_decoys_are_recognised_however_they_are_written(tmp_path, column, target, decoy):
+    path = write_with_decoys(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2, 465.24, target),
+        ("KEDITPEP", "KEDITPEP", "DECOY_P1", 2, 465.24, decoy),
+    ], column=column)
+    assert lib._determine_precursors(lib._read_library_df(path)) == 1
+
+
+def test_a_blank_decoy_value_counts_as_a_target(tmp_path):
+    """Dropping rows on a missing value would lose real precursors."""
+    path = write_with_decoys(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2, 465.24, ""),
+        ("ACDEK", "ACDEK", "P2", 2, 290.12, 0),
+    ])
+    assert lib._determine_precursors(lib._read_library_df(path)) == 2
+
+
+def test_a_library_without_a_decoy_column_is_read_whole(tmp_path):
+    path = write_fragments(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2),
+        ("ACDEK", "ACDEK", "DECOY_P2", 2),
+    ])
+    assert lib._determine_precursors(lib._read_library_df(path)) == 2
+
+
+def test_a_decoy_keeping_its_targets_sequence_is_not_a_second_channel(tmp_path):
+    """Some decoys keep their target's sequence at a different mass. Counted,
+    they made a healthy library look like it held two label channels."""
+    path = write_with_decoys(tmp_path / "lib.tsv", [
+        ("PEPTIDEK", "PEPTIDEK", "P1", 2, 465.24, 0),
+        ("PEPTIDEK", "PEPTIDEK", "DECOY_P1", 2, 471.27, 1),
+    ])
+    df = lib._read_library_df(path)
+    g = lambda c: df[lib._get_column(df, c)]  # noqa: E731
+    assert lib.mods.mass_conflicts(g("Modified.Sequence"), g("Precursor.Charge"), g("Precursor.Mz")) == 0
+
+
+def test_decoys_do_not_reach_the_mod_table(tmp_path):
+    path = write_with_decoys(tmp_path / "lib.tsv", [
+        ("AC(UniMod:4)DEK", "ACDEK", "P1", 2, 318.63, 0),
+        ("PEPM(UniMod:35)TIDEK", "PEPMTIDEK", "DECOY_P1", 2, 539.25, 1),
+    ])
+    names = {d["name"] for d in lib._mod_report(lib._read_library_df(path)).details}
+    assert names == {"UniMod:4"}
 
