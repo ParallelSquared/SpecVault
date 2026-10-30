@@ -56,10 +56,14 @@ const describeError = (body, status) => {
   return `Server responded with ${status}`;
 };
 
-const logRead = (body) =>
-  body.software_version
-    ? `Read the ${body.search_algorithm} ${body.software_version} log at ${body.creation_log_path}.`
-    : '';
+// A log whose software and version were read says so; one that was found but
+// not understood still says it was found, or the log field reads as untouched.
+const logRead = (body) => {
+  if (body.software_version) {
+    return `Read the ${body.search_algorithm} ${body.software_version} log at ${body.creation_log_path}.`;
+  }
+  return body.creation_log_path ? `Found a log at ${body.creation_log_path}.` : '';
+};
 
 function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   const [formData, setFormData] = useState(emptyForm());
@@ -69,6 +73,10 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   const [analyzeMessage, setAnalyzeMessage] = useState(null);
   const [readingLog, setReadingLog] = useState(false);
   const [logMessage, setLogMessage] = useState(null);
+  // Set when saving found the file already catalogued: the entry it matched,
+  // and the path that was being added, waiting on a yes.
+  const [duplicate, setDuplicate] = useState(null);
+  const [addingPath, setAddingPath] = useState(false);
 
   const handleChange = (name, value) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -119,8 +127,11 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
             : String(body.carbamidomethylated),
         ptms: body.ptms && body.ptms.length ? body.ptms : prev.ptms,
       }));
-      const fromLog = logRead(body);
-      setAnalyzeMessage((body.warning || 'Auto-filled from file. Review before saving.') + (fromLog ? ' ' + fromLog : ''));
+      setAnalyzeMessage(body.warning || 'Auto-filled from file. Review before saving.');
+      // Analyzing the file also reads its creation log, so the log's own
+      // Auto-fill has nothing left to do. Its message is shown as though the
+      // button had been pressed, or the log field looks like unfinished work.
+      setLogMessage(body.creation_log_path ? `${logRead(body)} Review before saving.`.trim() : null);
     } catch (err) {
       setAnalyzeMessage(err.message);
     } finally {
@@ -177,6 +188,12 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
 
       const body = await res.json().catch(() => null);
       if (!res.ok) {
+        // The file is already catalogued somewhere else. Not an error to
+        // correct — the entry it matched is offered the path instead.
+        if (res.status === 409 && body?.detail?.library_id) {
+          setDuplicate({ ...body.detail, path: payload.path });
+          return;
+        }
         throw new Error(describeError(body, res.status));
       }
 
@@ -186,6 +203,27 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
       setError(err.message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleAddPathToExisting = async () => {
+    setAddingPath(true);
+    setError(null);
+    try {
+      const res = await fetch(libraryUrl(`${duplicate.library_id}/paths`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: duplicate.path }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body, res.status));
+      setDuplicate(null);
+      setFormData(emptyForm());
+      onLibraryAdded();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAddingPath(false);
     }
   };
 
@@ -333,7 +371,43 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
         );
       })}
 
-      <button type="submit" disabled={submitting}>
+      {duplicate && (
+        <div style={{
+          marginBottom: '1rem', padding: '0.75rem', borderRadius: '6px',
+          border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+        }}>
+          <p style={{ margin: 0, fontWeight: 600 }}>{duplicate.message}</p>
+          <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem' }}>
+            This exact file is already recorded as library #{duplicate.library_id}
+            {duplicate.paths?.length
+              ? `, at ${duplicate.paths.join(', ')}` : ''}.
+          </p>
+          {duplicate.already_recorded ? (
+            <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem' }}>
+              That entry already lists this path, so there is nothing to add.
+            </p>
+          ) : (
+            <>
+              <p style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
+                Add <code style={{ background: 'none', padding: 0 }}>{duplicate.path}</code> to
+                it as another place the file is?
+              </p>
+              <button type="button" onClick={handleAddPathToExisting} disabled={addingPath}>
+                {addingPath ? 'Adding path...' : 'Add path to entry'}
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setDuplicate(null)}
+            style={{ marginLeft: duplicate.already_recorded ? 0 : '0.5rem', marginTop: '0.5rem' }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      <button type="submit" disabled={submitting || !!duplicate}>
         {submitting ? 'Adding...' : 'Add Library'}
       </button>
       {error && <p style={{ color: 'red' }}>Error: {error}</p>}

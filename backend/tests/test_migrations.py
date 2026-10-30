@@ -79,19 +79,25 @@ def test_baseline_is_the_first_migration():
 
 def test_upgrade_leaves_a_pre_migration_database_alone(tmp_path, lab):
     """A database built by create_all() before migrations existed is stamped,
-    not rebuilt -- and the rows in it survive, with their paths brought up to
-    date by the migrations that then run."""
+    not rebuilt -- and the rows in it survive every migration that then runs.
+
+    Built by replaying the baseline and then forgetting that it ran, because
+    that is the schema create_all() produced back then. Calling create_all()
+    here would build today's schema instead and test nothing.
+    """
     path = tmp_path / "legacy.db"
     engine = create_engine(f"sqlite:///{path.as_posix()}")
-    Base.metadata.create_all(bind=engine)  # how such a database was built
+    config = migrate._config()
     with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, migrate.BASELINE)
         connection.exec_driver_sql(
             "INSERT INTO libraries (path, creator) VALUES ('L:/old.tsv', 'someone')"
         )
+        connection.exec_driver_sql("DROP TABLE alembic_version")
     engine.dispose()
 
     engine = create_engine(f"sqlite:///{path.as_posix()}")
-    config = migrate._config()
     with engine.begin() as connection:
         config.attributes["connection"] = connection
         assert migrate._needs_stamping(connection)
@@ -99,8 +105,12 @@ def test_upgrade_leaves_a_pre_migration_database_alone(tmp_path, lab):
         command.upgrade(config, "head")
     engine.dispose()
 
-    rows = sqlite3.connect(path).execute("SELECT path, creator FROM libraries").fetchall()
-    assert rows == [("old.tsv", "someone")]  # kept, and made share-relative
+    rows = sqlite3.connect(path).execute(
+        "SELECT library_paths.path, libraries.creator FROM libraries"
+        " JOIN library_paths ON library_paths.library_id = libraries.id"
+    ).fetchall()
+    # kept, made share-relative, and moved into the paths table
+    assert rows == [("old.tsv", "someone")]
 
 
 class TestPathsBecomeShareRelative:
@@ -113,6 +123,9 @@ class TestPathsBecomeShareRelative:
     """
 
     BEFORE_PATHS = "722fc51941ab"
+    # This migration, not head: later ones move path out of the libraries
+    # table altogether, and these tests are about what this one does to it.
+    AFTER_PATHS = "3b69dad453b9"
 
     @pytest.fixture
     def catalog(self, tmp_path, lab):
@@ -145,23 +158,20 @@ class TestPathsBecomeShareRelative:
                 "SELECT path, creation_log_path, fasta_path FROM libraries ORDER BY id"
             ).fetchall()
 
-    def move(self, engine, target):
+    def move(self, engine, target, up=True):
         config = migrate._config()
         with engine.begin() as connection:
             config.attributes["connection"] = connection
-            if target == "head":
-                command.upgrade(config, target)
-            else:
-                command.downgrade(config, target)
+            (command.upgrade if up else command.downgrade)(config, target)
 
     def test_every_spelling_becomes_the_same_relative_form(self, catalog):
-        self.move(catalog, "head")
+        self.move(catalog, self.AFTER_PATHS)
         rows = self.paths(catalog)
         assert rows[0][0] == "Libraries/one.tsv"
         assert rows[1][0] == "Libraries/two.tsv"
 
     def test_log_and_fasta_paths_are_rewritten_too(self, catalog):
-        self.move(catalog, "head")
+        self.move(catalog, self.AFTER_PATHS)
         row = self.paths(catalog)[0]
         assert row[1] == "Libraries/report.log.txt"
         # several FASTAs are one field, each converted on its own
@@ -169,16 +179,16 @@ class TestPathsBecomeShareRelative:
 
     def test_a_path_off_the_share_is_left_alone(self, catalog):
         """resolve() still opens it; inventing a translation would be worse."""
-        self.move(catalog, "head")
+        self.move(catalog, self.AFTER_PATHS)
         assert self.paths(catalog)[2][0] == r"C:\off-share\three.tsv"
 
     def test_the_rows_survive(self, catalog):
-        self.move(catalog, "head")
+        self.move(catalog, self.AFTER_PATHS)
         assert len(self.paths(catalog)) == 3
 
     def test_downgrade_restores_absolute_paths(self, catalog):
-        self.move(catalog, "head")
-        self.move(catalog, self.BEFORE_PATHS)
+        self.move(catalog, self.AFTER_PATHS)
+        self.move(catalog, self.BEFORE_PATHS, up=False)
         rows = self.paths(catalog)
         assert rows[0][0] == r"\\PTI\Lab\Libraries\one.tsv"
         assert rows[1][0] == r"\\PTI\Lab\Libraries\two.tsv"
@@ -186,10 +196,10 @@ class TestPathsBecomeShareRelative:
 
     def test_upgrading_twice_changes_nothing_more(self, catalog):
         """Already-canonical paths are not canonicalised again."""
-        self.move(catalog, "head")
+        self.move(catalog, self.AFTER_PATHS)
         once = self.paths(catalog)
-        self.move(catalog, self.BEFORE_PATHS)
-        self.move(catalog, "head")
+        self.move(catalog, self.BEFORE_PATHS, up=False)
+        self.move(catalog, self.AFTER_PATHS)
         assert self.paths(catalog) == once
 
     def test_a_folder_named_like_a_mount_survives_a_second_upgrade(self, tmp_path, lab):
@@ -206,10 +216,10 @@ class TestPathsBecomeShareRelative:
                 (r"L:\mnt\lab\foo.tsv", "z"),
             )
 
-        self.move(engine, "head")
+        self.move(engine, self.AFTER_PATHS)
         assert self.paths(engine)[0][0] == "mnt/lab/foo.tsv"
         # and again, as a downgrade-then-upgrade would
-        self.move(engine, "head")
+        self.move(engine, self.AFTER_PATHS)
         assert self.paths(engine)[0][0] == "mnt/lab/foo.tsv"
         engine.dispose()
 
@@ -233,7 +243,7 @@ class TestPathsBecomeShareRelative:
         monkeypatch.setattr(share, "CONFIG", share.ShareConfig("", [], require_on_share=False))
 
         with pytest.raises(Exception, match="no lab share is configured"):
-            self.move(engine, "head")
+            self.move(engine, self.AFTER_PATHS)
 
         # and the row is untouched, so it can be migrated once the share is set up
         assert self.paths(engine)[0][0] == r"L:\Libraries\one.tsv"
@@ -245,7 +255,7 @@ class TestPathsBecomeShareRelative:
 
         engine = create_engine(f"sqlite:///{(tmp_path / 'empty.db').as_posix()}")
         monkeypatch.setattr(share, "CONFIG", share.ShareConfig("", [], require_on_share=False))
-        self.move(engine, "head")
+        self.move(engine, self.AFTER_PATHS)
         with engine.connect() as connection:
             assert MigrationContext.configure(connection).get_current_revision() == "3b69dad453b9"
         engine.dispose()
@@ -263,3 +273,102 @@ def test_fresh_database_is_marked_as_migrated(tmp_path):
         assert MigrationContext.configure(connection).get_current_revision() is not None
         assert inspect(connection).has_table("libraries")
     engine.dispose()
+
+
+class TestForeignKeysEnforced:
+    """The path migrations, run the way a server with foreign keys on runs them.
+
+    SQLite cannot drop a column: alembic's batch mode builds a new table,
+    copies the rows, DROPs the old one and renames. With PRAGMA foreign_keys
+    ON that DROP cascades into every table referencing it -- so the order the
+    tables are built and dropped in decides whether the data survives.
+
+    This suite's other tests run with enforcement off, which is SQLite's
+    default and hid the bug completely: the migration moved every path into
+    library_paths and the drop of the old libraries table then deleted them
+    all, leaving libraries with no paths at all.
+    """
+
+    FIRST = "722fc51941ab"
+    LAST = "d9e5a3fd6e68"
+
+    @pytest.fixture
+    def engine(self, tmp_path, lab):
+        from sqlalchemy import event
+
+        engine = create_engine(f"sqlite:///{(tmp_path / 'fk.db').as_posix()}")
+
+        @event.listens_for(engine, "connect")
+        def enforce(dbapi_connection, _record):
+            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+        yield engine
+        engine.dispose()
+
+    def move(self, engine, target, up=True):
+        config = migrate._config()
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            (command.upgrade if up else command.downgrade)(config, target)
+
+    def seed(self, engine):
+        self.move(engine, self.FIRST)
+        with engine.begin() as connection:
+            for path in (r"L:\Libraries\one.tsv", r"L:\Libraries\two.tsv"):
+                connection.exec_driver_sql(
+                    "INSERT INTO libraries (path, creator) VALUES (?, ?)", (path, "z")
+                )
+
+    def paths(self, engine):
+        with engine.connect() as connection:
+            return sorted(
+                row[0] for row in connection.exec_driver_sql(
+                    "SELECT path FROM library_paths"
+                ).fetchall()
+            )
+
+    def test_paths_survive_the_upgrade(self, engine):
+        self.seed(engine)
+        self.move(engine, "head")
+        assert self.paths(engine) == ["Libraries/one.tsv", "Libraries/two.tsv"]
+
+    def test_every_library_still_has_a_path(self, engine):
+        """The failure this guards against left the libraries behind with no
+        paths at all, which the API cannot even serialise."""
+        self.seed(engine)
+        self.move(engine, "head")
+        with engine.connect() as connection:
+            orphans = connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM libraries WHERE id NOT IN"
+                " (SELECT library_id FROM library_paths)"
+            ).scalar()
+        assert orphans == 0
+
+    def test_paths_survive_the_downgrade(self, engine):
+        self.seed(engine)
+        self.move(engine, "head")
+        self.move(engine, self.FIRST, up=False)
+        with engine.connect() as connection:
+            rows = sorted(
+                row[0] for row in connection.exec_driver_sql(
+                    "SELECT path FROM libraries"
+                ).fetchall()
+            )
+        assert rows == [r"\\PTI\Lab\Libraries\one.tsv", r"\\PTI\Lab\Libraries\two.tsv"]
+
+    def test_extra_paths_survive_a_round_trip_to_head(self, engine):
+        """A second copy is kept across upgrade, and the first survives the
+        downgrade that has nowhere to put the second."""
+        self.seed(engine)
+        self.move(engine, "head")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO library_paths (library_id, path) VALUES (1, 'Archive/one.tsv')"
+            )
+        assert len(self.paths(engine)) == 3
+
+        self.move(engine, self.FIRST, up=False)
+        self.move(engine, "head")
+        # the extra copy is gone -- the old shape had nowhere for it -- but
+        # every library still has the path it was catalogued at
+        assert self.paths(engine) == ["Libraries/one.tsv", "Libraries/two.tsv"]

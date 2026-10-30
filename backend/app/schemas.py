@@ -24,6 +24,13 @@ class ModDetail(BaseModel):
     expected_mass: Optional[float] = None
 
 
+class LibraryPathInfo(BaseModel):
+    """One of a library's paths, as somebody looking at it needs it."""
+    path: str       # share-relative, the stored form
+    display: str    # written the way the asking machine writes paths
+    exists: bool    # whether the file is actually there right now
+
+
 class LibraryBase(BaseModel):
     path: str
     creator: str
@@ -90,6 +97,11 @@ class LibraryUpdate(BaseModel):
 class LibraryResponse(LibraryBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    # Required when adding a library -- LibraryBase says so -- but optional
+    # coming back. A library whose paths have somehow gone is a thing to see
+    # and fix in the catalog, and making it unserialisable means the listing
+    # fails as a whole: one damaged row and nobody can read any of them.
+    path: Optional[str] = None
     # Built by the server from the saved file, never taken from a request
     content_hash: Optional[str] = None
     precursors: Optional[int] = None
@@ -109,6 +121,36 @@ class LibraryResponse(LibraryBase):
     display_path: Optional[str] = None
     display_creation_log_path: Optional[str] = None
     display_fasta_path: Optional[str] = None
+    # Every place this library's file is known to be. The first is where it was
+    # catalogued and the one whose file was read; `path` above is that one.
+    paths: List[str] = []
+    # The same list with each one written for the asking machine and said to be
+    # there or not. path_exists above is true when any of them is: a library
+    # kept in two places is still reachable when one of them is offline.
+    path_details: List[LibraryPathInfo] = []
+
+    @field_validator('paths', mode='before')
+    @classmethod
+    def flatten_paths(cls, v):
+        """The relationship gives LibraryPath rows; the API gives strings."""
+        return [p if isinstance(p, str) else p.path for p in (v or [])]
+
+
+class AddPathRequest(BaseModel):
+    """Another place an existing library's file is."""
+    path: str
+
+
+class DuplicateLibrary(BaseModel):
+    """What a save is told when the file is already catalogued.
+
+    Carries the entry it matched so the caller can offer to add the path to it
+    rather than making a second entry for the same bytes.
+    """
+    message: str
+    library_id: int
+    paths: List[str] = []        # as the asking machine writes them
+    already_recorded: bool = False  # this exact path is one of them
 
 # New schemas for the analyze endpoint
 class AnalyzeRequest(BaseModel):

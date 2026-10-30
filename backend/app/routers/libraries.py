@@ -611,6 +611,54 @@ def _viewer_os(user_agent: Optional[str]) -> str:
 PATH_FIELDS = ("path", "creation_log_path", "fasta_path")
 
 
+def _refuse_if_catalogued(db: Session, content_hash: Optional[str], path: str, flavour: str) -> None:
+    """Stop a save whose file the catalog already holds.
+
+    The hash is stored so that "do we already have this?" has an answer; two
+    entries for one file is the question going unasked. The refusal carries the
+    entry it matched, so the caller can offer to add this path to it instead --
+    a library copied to a second folder is one library in two places.
+    """
+    if not content_hash:
+        return  # unreadable file: no hash is not the same as a matching one
+    existing = (
+        db.query(models.Library)
+        .filter(models.Library.content_hash == content_hash)
+        .order_by(models.Library.id)
+        .first()
+    )
+    if existing is None:
+        return
+    raise HTTPException(status_code=409, detail=schemas.DuplicateLibrary(
+        message="Library already exists in SpecVault.",
+        library_id=existing.id,
+        paths=[share.to_display(row.path, flavour) for row in existing.paths],
+        already_recorded=any(row.path == path for row in existing.paths),
+    ).model_dump())
+
+
+def _refuse_if_path_taken(db: Session, path: str, flavour: str) -> None:
+    """A path names one file, so it belongs to one entry.
+
+    The unique constraint says the same thing, but an IntegrityError cannot say
+    *which* library already has it, and that is the useful half.
+    """
+    owner = (
+        db.query(models.Library)
+        .join(models.LibraryPath)
+        .filter(models.LibraryPath.path == path)
+        .first()
+    )
+    if owner is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{share.to_display(path, flavour)} is already recorded as library "
+                f"#{owner.id}."
+            ),
+        )
+
+
 def _display(stored: Optional[str], flavour: str) -> Optional[str]:
     """A stored path written for *flavour*. Several FASTAs are one field joined
     by "; ", so each part is rendered rather than the string as a whole."""
@@ -752,26 +800,40 @@ def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since 
 
 def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.LibraryResponse:
     data = schemas.LibraryResponse.model_validate(lib)
-    # The stored path is share-relative; the file lives wherever this server
-    # reaches the share.
-    local = share.resolve(lib.path)
-    exists = os.path.exists(local)
-    data.path_exists = exists
+    stored = [row.path for row in lib.paths]
+
+    # Each path is checked, not just the first: the files panel marks the ones
+    # that are not there, so a copy that has been moved or deleted shows up as
+    # the thing to fix rather than silently going stale.
+    local = {p: share.resolve(p) for p in stored}
+    present = {p: os.path.exists(local[p]) for p in stored}
+    data.path_details = [
+        schemas.LibraryPathInfo(
+            path=p, display=_display(p, flavour) or p, exists=present[p]
+        )
+        for p in stored
+    ]
+
+    # Found wherever it is: a library kept in two places is still reachable
+    # when one of them is offline, and saying "missing" because the first copy
+    # is away would send someone looking for a file that is right there.
+    found = next((local[p] for p in stored if present[p]), None)
+    data.path_exists = found is not None
 
     # Written the way the machine asking for it writes paths, so that the path
     # shown -- and the one the Copy button puts on the clipboard -- is one that
     # works when pasted into that person's own shell or file manager.
-    data.display_path = share.to_display(lib.path, flavour) if share.configured() else lib.path
+    data.display_path = _display(lib.path, flavour)
     data.display_creation_log_path = _display(lib.creation_log_path, flavour)
     data.display_fasta_path = _display(lib.fasta_path, flavour)
 
-    _, ext = os.path.splitext(lib.path)
+    _, ext = os.path.splitext(lib.path or "")
     data.file_format = ext.lstrip('.').upper() if ext else None
 
-    if exists:
+    if found is not None:
         try:
-            data.file_size = os.path.getsize(local)
-            data.updated_at = datetime.fromtimestamp(os.path.getmtime(local))
+            data.file_size = os.path.getsize(found)
+            data.updated_at = datetime.fromtimestamp(os.path.getmtime(found))
         except OSError:
             data.file_size = None
             data.updated_at = None
@@ -824,8 +886,14 @@ def create_library(
     data = library.model_dump()
     for field in PATH_FIELDS:
         data[field] = _store_path(data.get(field), field)
-    data.update(_file_facts(share.resolve(data["path"])))
-    db_library = models.Library(**data)
+    path = data.pop("path")
+    data.update(_file_facts(share.resolve(path)))
+
+    flavour = _viewer_os(user_agent)
+    _refuse_if_catalogued(db, data.get("content_hash"), path, flavour)
+    _refuse_if_path_taken(db, path, flavour)
+
+    db_library = models.Library(**data, paths=[models.LibraryPath(path=path)])
     db.add(db_library)
     try:
         db.commit()
@@ -833,7 +901,45 @@ def create_library(
         db.rollback()
         raise HTTPException(status_code=409, detail="A library with this path already exists")
     db.refresh(db_library)
-    return _to_response(db_library, _viewer_os(user_agent))
+    return _to_response(db_library, flavour)
+
+
+@router.post("/{library_id}/paths", response_model=schemas.LibraryResponse)
+def add_path(
+    library_id: int,
+    payload: schemas.AddPathRequest,
+    user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Record another place this library's file is.
+
+    What the duplicate refusal on save offers: the file is already catalogued,
+    so instead of a second entry for the same bytes, the entry it matched
+    learns about this copy too.
+    """
+    library = db.query(models.Library).filter(models.Library.id == library_id).first()
+    if not library:
+        raise HTTPException(status_code=404, detail="Library not found")
+
+    flavour = _viewer_os(user_agent)
+    path = _store_path(payload.path, "path")
+    if path is None:
+        raise HTTPException(status_code=400, detail="No path given")
+    if path in (row.path for row in library.paths):
+        raise HTTPException(
+            status_code=409,
+            detail=f"This library already lists {share.to_display(path, flavour)}",
+        )
+    _refuse_if_path_taken(db, path, flavour)
+
+    library.paths.append(models.LibraryPath(path=path))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That path belongs to another library")
+    db.refresh(library)
+    return _to_response(library, flavour)
 
 @router.patch("/{library_id}", response_model=schemas.LibraryResponse)
 def update_library(
@@ -849,10 +955,23 @@ def update_library(
     for field in PATH_FIELDS:
         if field in update_data:
             update_data[field] = _store_path(update_data[field], field)
+
+    # path is where the library was catalogued -- the first of its paths, and
+    # the copy whose file is read. Setting it moves that one; any other places
+    # the library is recorded stay as they are, and are added or removed
+    # through /{id}/paths rather than here.
+    new_path = update_data.pop("path", None)
     for field, value in update_data.items():
         setattr(library, field, value)
-    if "path" in update_data:  # a different file: its hash, table and counts are its own
-        for field, value in _file_facts(share.resolve(library.path)).items():
+
+    if new_path is not None and new_path != library.path:
+        _refuse_if_path_taken(db, new_path, _viewer_os(user_agent))
+        if library.paths:
+            library.paths[0].path = new_path
+        else:
+            library.paths.append(models.LibraryPath(path=new_path))
+        # a different file: its hash, table and counts are its own
+        for field, value in _file_facts(share.resolve(new_path)).items():
             setattr(library, field, value)
     try:
         db.commit()

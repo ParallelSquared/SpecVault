@@ -92,7 +92,18 @@ on Linux. There is no absolute path that works everywhere, so the catalog does
 not store one: it stores `Libraries/foo.tsv`, the path *within* the share, and
 each side renders it the way its own machine writes paths.
 
-Three things follow from that:
+A library can be in more than one place. The same file is often copied — kept
+beside the runs it came from and again in a shared folder — and those copies
+are one library, not several, so an entry holds a list of paths. Saving a file
+the catalog already has (same SHA-256) is refused with the entry it matched,
+and the path can be added to that entry instead. A path belongs to exactly one
+entry, enforced by a unique constraint across every path in the catalog.
+
+A library counts as found when **any** of its paths has the file, so one copy
+being offline does not make it missing; the files panel marks which copies are
+not there.
+
+Three things follow from storing paths share-relative:
 
 - Adding the same library from a Mac and from Windows produces the same stored
   path, so it is one entry rather than two.
