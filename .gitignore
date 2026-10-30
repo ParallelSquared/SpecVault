@@ -10,8 +10,12 @@ venv/
 .env.local
 
 # --- Local database ---
+# -wal and -shm are SQLite's write-ahead log and its shared-memory index;
+# they sit beside the database whenever the server has it open.
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # --- Node ---
 node_modules/

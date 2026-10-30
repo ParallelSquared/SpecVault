@@ -72,11 +72,40 @@ def test_out_of_range_paging_is_rejected(client, query, reason):
     assert client.get(f"/libraries/{query}").status_code == 422, reason
 
 
-def test_total_header_is_exposed_to_the_browser(client):
-    """A header the browser cannot read is no use to the frontend."""
-    response = client.get("/libraries/", headers={"Origin": "http://localhost:5173"})
-    exposed = response.headers.get("access-control-expose-headers", "").lower()
-    assert TOTAL_HEADER.lower() in exposed
+def test_total_header_reaches_the_browser(client):
+    """A header the browser cannot read is no use to the frontend.
+
+    It needs no CORS header to be readable now: one process serves the UI and
+    the API, and Vite proxies to the API in development, so the browser sees
+    one origin both ways and same-origin responses expose every header.
+    """
+    response = client.get("/libraries/")
+    assert TOTAL_HEADER in response.headers
+
+
+def test_cors_when_configured_exposes_the_total_header(monkeypatch):
+    """The escape hatch for serving the UI from its own host. Nothing uses it
+    by default, so it would otherwise break without anything noticing -- and
+    a cross-origin frontend that cannot read X-Total-Count renders one page
+    as though it were the whole catalog."""
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:5173")
+    reconfigured = importlib.reload(main)
+    try:
+        with TestClient(reconfigured.app) as client:
+            response = client.get(
+                "/libraries/", headers={"Origin": "http://localhost:5173"}
+            )
+        exposed = response.headers.get("access-control-expose-headers", "").lower()
+        assert TOTAL_HEADER.lower() in exposed
+    finally:
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        importlib.reload(main)  # leave the shared module as the rest expects
 
 
 # ---------------------------------------------------------------- CRUD

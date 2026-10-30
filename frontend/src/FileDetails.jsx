@@ -77,8 +77,11 @@ function FileDetails({ lib }) {
           to fix, and the library still counts as found while another is there. */}
       {missingCount > 0 && (
         <p style={{ fontSize: '0.8rem', color: MISSING, margin: '0.4rem 0 0' }}>
+          {/* The subject is the count that is missing, not how many there are:
+              "1 of 2 recorded paths is not there". */}
           ⚠ {missingCount} of this library&apos;s {libraryPaths.length} recorded
-          {libraryPaths.length === 1 ? ' path is' : ' paths are'} not there.
+          {libraryPaths.length === 1 ? ' path' : ' paths'}
+          {missingCount === 1 ? ' is' : ' are'} not there.
         </p>
       )}
       {open && (

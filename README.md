@@ -18,9 +18,10 @@ SpecVault/
 └── frontend/    React 19 + Vite UI
 ```
 
-## Running it
+## Running it in development
 
-Two processes, two terminals.
+Two processes, two terminals. Vite proxies `/libraries` to the backend, so the
+browser sees one origin — the same as deployed, and no CORS either way.
 
 **Backend** (http://127.0.0.1:8000, docs at `/docs`):
 
@@ -41,13 +42,83 @@ npm install
 npm run dev
 ```
 
+## Deploying it
+
+One process, one port. The backend serves the built UI from `frontend/dist`
+alongside the API, so there is no second server, no CORS, and no hostname
+baked into the bundle — the same build works at `http://specvault`, at an IP,
+or anywhere else it is reached from.
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+```bash
+cd backend && venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 80
+```
+
+Rebuild the UI whenever the frontend changes; the backend picks it up from
+disk with no rebuild of its own. Migrations run at startup, so deploying is
+"update the code, rebuild the UI, restart".
+
+### What the host needs
+
+**A machine that stays up and that nobody logs into casually.** Any PC on the
+PTI network will do — people reach SpecVault by URL, so it is not a Guacamole
+session and the host does not have to be a machine anyone signs into. If
+someone does, a reboot or a sign-out takes the catalog down with it.
+
+**A stable address.** A DNS name or a static IP reservation; a DHCP address
+that changes breaks everyone's bookmark.
+
+**An inbound firewall rule** for the port — Windows Firewall blocks it by
+default:
+
+```bash
+netsh advfirewall firewall add rule name="SpecVault" dir=in action=allow protocol=TCP localport=80
+```
+
+**A service account that can read the share.** Run it as a Windows service
+(NSSM, or a scheduled task at boot) so it survives reboots and sign-outs — but
+a service running as `LocalSystem` reaches the network as the *machine*
+account, and mapped drives do not exist for services at all. So:
+
+- run the service as a domain account with read access to `\\PTI\Lab`
+- set `server_root` in `share.json` to the UNC path, never `L:\`
+
+This is the mistake that works perfectly when tested by hand and then fails
+for every library once it is a service.
+
+**One process, not several.** Do not use `uvicorn --workers`. The analysis
+caches live in the process: Auto-fill starts hashing and reading a library and
+Save collects the result, so with two workers a Save landing on the other one
+re-reads the whole file. It still works, just slowly — on a 28-million-row
+library, noticeably so. One process serves 25 people reading a catalog
+comfortably.
+
+### Backups
+
+The database is a single file. Copy it on a schedule, to the share rather than
+beside itself:
+
+```bash
+sqlite3 C:\ProgramData\SpecVault\specvault.db ".backup '\\PTI\Lab\Backups\specvault.db'"
+```
+
+`.backup` rather than copying the file: it is consistent even while the server
+is writing. **Keep the database itself on the host's local disk**, never on the
+share — SQLite over SMB corrupts.
+
 ## Configuration
 
 | File | Variable | Default |
 |---|---|---|
 | `backend/.env` | `DATABASE_URL` | `sqlite:///./specvault.db` |
 | `backend/.env` | `SHARE_CONFIG` | `backend/share.json` |
-| `frontend/.env` | `VITE_API_BASE` | `http://127.0.0.1:8000` |
+| `backend/.env` | `UI_DIR` | `frontend/dist` |
+| `backend/.env` | `CORS_ORIGINS` | unset — not needed either way |
+| `frontend/.env` | `VITE_DEV_API` | `http://127.0.0.1:8000` (dev proxy only) |
+| `frontend/.env` | `VITE_API_BASE` | unset — same origin |
 
 Both are gitignored; each directory has a committed `.env.example` to copy.
 
