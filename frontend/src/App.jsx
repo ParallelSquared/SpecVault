@@ -3,7 +3,8 @@ import AddLibraryForm from './AddLibraryForm';
 import FilterBar from './FilterBar';
 import ModDetails from './ModDetails';
 import LibraryDetails from './LibraryDetails';
-import { PRIMARY_FIELDS, SECONDARY_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS } from './libraryFields';
+import FileDetails from './FileDetails';
+import { PRIMARY_FIELDS, GRID_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
 import { libraryUrl } from './api';
 
@@ -198,15 +199,18 @@ function App() {
                           gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
                           gap: '0.75rem',
                         }}>
-                          {SECONDARY_FIELDS.map((field) => (
-                            <div key={field.name}>
+                          {GRID_FIELDS.map((field) => (
+                            <div key={field.name} style={{ gridColumn: field.wide ? '1 / -1' : undefined }}>
                               <div style={{ fontSize: '0.75rem', color: '#666', fontWeight: 'bold' }}>
                                 {field.label}
                               </div>
-                              <div style={{ wordBreak: 'break-word' }}>{renderCellValue(field, lib)}</div>
+                              <div style={{ wordBreak: 'break-word', whiteSpace: field.wide ? 'pre-wrap' : undefined }}>
+                                {renderCellValue(field, lib)}
+                              </div>
                             </div>
                           ))}
                         </div>
+                        <FileDetails lib={lib} />
                         <ModDetails details={lib.mod_details} />
                         <LibraryDetails stats={lib.library_stats} />
                       </td>

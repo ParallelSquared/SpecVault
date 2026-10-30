@@ -1,8 +1,9 @@
 export const LIBRARY_FIELDS = [
   // --- Core Info ---
-  // wide: a row of its own, so the creation log sits under the path
+  // wide: a row of its own (in the Add form, and when browsing)
+  // file: a path, shown when browsing under Show files rather than in the field grid
   { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true },
-  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true },
+  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true, file: true },
   { name: 'creator', label: 'Creator', type: 'combobox', required: true, filterType: 'select', group: 'Core Info', primary: true },
   { name: 'project', label: 'Project', type: 'combobox', required: false, filterType: 'select', group: 'Core Info', primary: false },
   { name: 'tags', label: 'Tags', type: 'multicombobox', required: true, filterType: 'multiselect', group: 'Core Info', primary: true },
@@ -38,9 +39,9 @@ export const LIBRARY_FIELDS = [
 
 
   // --- Files & Notes ---
-  { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
-  { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, wide: true },
-  { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
+  { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false, file: true },
+  { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, wide: true, file: true },
+  { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false, wide: true },
 ];
 
 export const FILTER_ONLY_FIELDS = [
@@ -65,6 +66,11 @@ export const COMPUTED_FIELDS = [
 export const ALL_DISPLAY_FIELDS = [...LIBRARY_FIELDS, ...COMPUTED_FIELDS];
 export const PRIMARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => f.primary);
 export const SECONDARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => !f.primary);
+// The expanded row's grid: no paths, and full-width fields after the rest
+export const GRID_FIELDS = [
+  ...SECONDARY_FIELDS.filter((f) => !f.file && !f.wide),
+  ...SECONDARY_FIELDS.filter((f) => !f.file && f.wide),
+];
 
 export const FIELD_GROUPS = ['Core Info', 'Method Info', 'Sample Info', 'Files & Notes'];
 
