@@ -593,6 +593,23 @@ def _store_path(value: Optional[str], field: str) -> Optional[str]:
     )
 
 
+def _local_path(value: str, field: str = "path") -> str:
+    """This server's path for one a request gave us, refused if off the share.
+
+    Checked here rather than only at Save, for two reasons. The useful one:
+    somebody who points Auto-fill at a library on their own desktop finds out
+    at the first click, instead of filling in the whole form and being turned
+    away at the end. The other: these endpoints open whatever path they are
+    given, so without the check they read any file the service account can
+    reach, and answer whether any path exists -- to anyone who can reach the
+    server, which is the whole network.
+    """
+    local = _store_path(value, field)
+    if local is None:
+        raise HTTPException(status_code=400, detail="No path given")
+    return share.resolve(local)
+
+
 # Which flavour of path to show someone back, from the browser that asked.
 # Getting this wrong is cosmetic -- the path still identifies the same file --
 # so an unfamiliar browser gets the server's own spelling rather than an error.
@@ -703,8 +720,9 @@ def analyze_library(
     user_agent: Optional[str] = Header(default=None),
 ):
     # Pasted from whichever machine the person is on, so translated to this
-    # server's view of the share before anything is opened.
-    path = share.resolve(_clean_path(payload.path))
+    # server's view of the share before anything is opened -- and refused here
+    # if it is not on the share, rather than after the form has been filled in.
+    path = _local_path(payload.path)
 
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
@@ -735,7 +753,7 @@ def analyze_library(
         notes.append(report.note)
 
     # The creation log: the one given, or else one where its software leaves it
-    given = share.resolve(_clean_path(payload.creation_log_path)) if payload.creation_log_path else ""
+    given = _local_path(payload.creation_log_path, "creation_log_path") if payload.creation_log_path else ""
     log, log_note = _read_log(given or creation_log.find(path), given=bool(given))
     if log_note:
         notes.append(log_note)
@@ -760,7 +778,7 @@ def analyze_log(
     user_agent: Optional[str] = Header(default=None),
 ):
     """Auto-fill from the creation log alone, without reading the library."""
-    log, note = _read_log(share.resolve(_clean_path(payload.path)), given=True)
+    log, note = _read_log(_local_path(payload.path, "creation_log_path"), given=True)
     return schemas.LogResponse(**_log_for_viewer(log, _viewer_os(user_agent)), warning=note)
 
 
@@ -787,7 +805,7 @@ def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
 
 @router.post("/hash-file")
 def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since it's just {path: str}
-    path = share.resolve(_clean_path(payload.path))
+    path = _local_path(payload.path)
 
     if not os.path.exists(path):
         return {"error": "File not found at that path"}

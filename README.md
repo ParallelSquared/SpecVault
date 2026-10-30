@@ -96,6 +96,49 @@ re-reads the whole file. It still works, just slowly — on a 28-million-row
 library, noticeably so. One process serves 25 people reading a catalog
 comfortably.
 
+### Updating
+
+Write and test the change on your own machine, push it, and pull it on the
+host. On the host, in order:
+
+```bash
+cd C:\SpecVault; git pull
+```
+
+```bash
+cd C:\SpecVault\backend; .\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+```bash
+cd C:\SpecVault\frontend; npm install; npm run build
+```
+
+```bash
+Restart-Service SpecVault
+```
+
+`frontend/dist` is **not in git** — the build output is gitignored, so pulling
+never updates the UI. Rebuilding it is what deploys a frontend change, and
+skipping that step leaves everyone on the old interface while the API is new.
+
+Restarting is what runs any new migrations. **Back the database up first when
+the update contains one**, because going back means downgrading the schema as
+well as the code, and a downgrade that drops a column drops its data:
+
+```bash
+sqlite3 C:\ProgramData\SpecVault\specvault.db ".backup 'C:\ProgramData\SpecVault\before-update.db'"
+```
+
+`backend/.env` is gitignored, so the host's own database path and settings
+survive every pull. `backend/share.json` **is** committed, because the share
+is the same for everyone: edit it on your machine and commit it, rather than
+on the host, where a pull would collide with the change. If a host ever does
+need its own copy, point `SHARE_CONFIG` at one outside the repository.
+
+The host needs Node only to build the UI. To keep the toolchain off it, run
+`npm run build` on your own machine, copy `frontend/dist` across, and set
+`UI_DIR` to wherever you put it.
+
 ### Backups
 
 The database is a single file. Copy it on a schedule, to the share rather than
