@@ -42,6 +42,8 @@ _JMOD_MBR_LIBRARY = re.compile(r"^MBR library written to ")
 _BANNER_LINES = 10
 # Names each software gives its log, preferred over any other log beside it
 _USUAL_NAMES = {DIANN: "report.log.txt", JMOD: "jmod_log.log"}
+# Raw files that only one vendor writes. An .mzML could have come from anyone.
+_VENDOR_FORMATS = {".d": "Bruker", ".raw": "Thermo"}
 
 
 class LogFacts(NamedTuple):
@@ -68,6 +70,12 @@ def read(path: str) -> Optional[LogFacts]:
     if software == JMOD:
         return _read_jmod(path, lines)
     return None
+
+
+def vendor(runs: List[str]) -> Optional[str]:
+    """The instrument vendor, when every run is a raw file only it writes."""
+    vendors = {_VENDOR_FORMATS.get(os.path.splitext(run.rstrip("\\/"))[1].lower()) for run in runs}
+    return vendors.pop() if len(vendors) == 1 else None
 
 
 def find(library_path: str) -> Optional[str]:

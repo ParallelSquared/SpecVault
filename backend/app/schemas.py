@@ -29,6 +29,7 @@ class LibraryBase(BaseModel):
     creator: str
     instrument: Optional[str] = None
     acquisition_type: Optional[str] = None
+    vendor: Optional[str] = None
     species: Optional[str] = None
     tags: Optional[List[str]] = None
     project: Optional[str] = None
@@ -66,6 +67,7 @@ class LibraryUpdate(BaseModel):
     creator: Optional[str] = None
     instrument: Optional[str] = None
     acquisition_type: Optional[str] = None
+    vendor: Optional[str] = None
     species: Optional[str] = None
     tags: Optional[List[str]] = None
     project: Optional[str] = None
@@ -121,6 +123,7 @@ class LogResponse(BaseModel):
     fasta_path: Optional[str] = None
     source_runs: List[str] = []
     mbr: Optional[bool] = None
+    vendor: Optional[str] = None  # from the source runs' file types
     warning: Optional[str] = None  # e.g. "file read but some columns missing"
 
 class AnalyzeResponse(LogResponse):

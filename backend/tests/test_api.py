@@ -531,6 +531,7 @@ def test_auto_fill_reads_the_log_beside_the_library(client, tmp_path):
     assert body["fasta_path"] == str(tmp_path / "human.fasta")
     assert body["source_runs"] == [str(tmp_path / "run1.raw")]
     assert body["mbr"] is True
+    assert body["vendor"] == "Thermo"
 
 
 def test_a_log_given_by_hand_is_used_instead(client, tmp_path):
@@ -576,6 +577,12 @@ def test_the_log_fields_are_saved(client, tmp_path):
     assert body["source_runs"] == ["D:/runs/run1.raw", "D:/runs/run2.raw"]
 
 
+def test_vendors_are_saved_and_offered_as_options(client, make_library):
+    assert make_library("D:/libs/a.tsv", vendor="Thermo")["vendor"] == "Thermo"
+    make_library("D:/libs/b.tsv", vendor="Bruker")
+    assert client.get("/libraries/options").json()["vendor"] == ["Bruker", "Thermo"]
+
+
 def test_software_versions_are_offered_as_options(client, make_library):
     make_library("D:/libs/a.tsv", software_version="2.5.0")
     make_library("D:/libs/b.tsv", software_version="1.9.2")
@@ -602,4 +609,3 @@ def test_auto_filling_an_unrecognised_log_says_which_formats_are_known(client, t
 def test_auto_filling_a_log_that_is_not_there_says_so(client, tmp_path):
     body = client.post("/libraries/analyze-log", json={"path": str(tmp_path / "absent.log")}).json()
     assert body["warning"] == "No creation log was found at that path."
-

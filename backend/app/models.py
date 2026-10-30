@@ -13,6 +13,7 @@ class Library(Base):
     creator = Column(String, nullable=False)
     instrument = Column(String, nullable=True)
     acquisition_type = Column(String, nullable=True)
+    vendor = Column(String, nullable=True)
     species = Column(String, nullable=True)
     tags = Column(JSON, nullable=True)
     project = Column(String, nullable=True)

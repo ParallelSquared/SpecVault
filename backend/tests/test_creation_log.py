@@ -2,6 +2,8 @@
 import os
 from datetime import date, datetime
 
+import pytest
+
 from app import creation_log
 
 BANNER = """
@@ -243,4 +245,18 @@ def test_a_diann_log_above_the_library_is_not_taken(tmp_path):
     below = os.path.join(folder, "sub")
     os.makedirs(below)
     assert creation_log.find(library_in(below)) is None
+
+
+# ----------------------------------------------------------------------- vendor
+
+@pytest.mark.parametrize("runs, expected", [
+    ([r"D:\runs\a.raw", r"D:\runs\b.RAW"], "Thermo"),
+    ([r"D:\runs\a.d", "D:/runs/b.d/"], "Bruker"),  # .d is a folder, maybe with a slash
+    ([r"D:\runs\a.mzML"], None),                    # converted: could be anyone's
+    ([r"D:\runs\a.raw", r"D:\runs\b.mzML"], None),
+    ([r"D:\runs\a.raw", r"D:\runs\b.d"], None),
+    ([], None),
+], ids=["raw", "d", "mzml", "raw-and-mzml", "raw-and-d", "no-runs"])
+def test_the_vendor_comes_from_the_runs_file_types(runs, expected):
+    assert creation_log.vendor(runs) == expected
 

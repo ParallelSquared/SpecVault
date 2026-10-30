@@ -635,6 +635,7 @@ def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
         "fasta_path": "; ".join(log.fasta) or None,
         "source_runs": log.runs,
         "mbr": log.mbr,
+        "vendor": creation_log.vendor(log.runs),
     }, None
 
 @router.post("/hash-file")
@@ -681,7 +682,7 @@ def _to_response(lib: models.Library) -> schemas.LibraryResponse:
 @router.get("/options")
 def get_field_options(db: Session = Depends(get_db)):
     simple_fields = [
-        "creator", "instrument", "acquisition_type", "species",
+        "creator", "instrument", "acquisition_type", "vendor", "species",
         "project", "finetuning", "search_algorithm", "software_version", "protease",
         "in_silico",
     ]

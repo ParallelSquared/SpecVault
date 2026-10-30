@@ -20,6 +20,11 @@ const cleanPath = (value) => {
 
 const PATH_FIELDS = new Set(['path', 'creation_log_path', 'fasta_path']);
 
+// Three fields to a row. Six tracks rather than three so a pair of fields can
+// split a row in half (span: 3).
+const GRID_TRACKS = 6;
+const FIELD_SPAN = 2;
+
 // What a creation log fills in, from either Auto-fill; anything the log does
 // not say is left as it was
 const withLogFields = (prev, body) => ({
@@ -31,6 +36,7 @@ const withLogFields = (prev, body) => ({
   fasta_path: body.fasta_path ?? prev.fasta_path,
   source_runs: body.source_runs && body.source_runs.length ? body.source_runs : prev.source_runs,
   mbr: body.mbr === null || body.mbr === undefined ? prev.mbr : String(body.mbr),
+  vendor: body.vendor ?? prev.vendor,
 });
 
 const logRead = (body) =>
@@ -166,45 +172,48 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     }
   };
 
+  // The paths with their own Auto-fill, shown to the right of the box
+  const autoFills = {
+    path: { onClick: handleAutoFill, busy: analyzing, label: 'Auto-fill from file', busyLabel: 'Analyzing...', message: analyzeMessage },
+    creation_log_path: { onClick: handleLogAutoFill, busy: readingLog, label: 'Auto-fill from log', busyLabel: 'Reading log...', message: logMessage },
+  };
+
   const renderField = (field) => (
     <div
       key={field.name}
-      style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', gridColumn: field.wide ? '1 / -1' : undefined }}
+      style={{
+        display: 'flex', flexDirection: 'column', gap: '0.25rem',
+        gridColumn: field.wide ? '1 / -1' : `span ${field.span || FIELD_SPAN}`,
+      }}
     >
       <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>
         {field.label}{field.required ? ' *' : ''}
       </label>
 
       {field.type === 'text' && (
-        <input
-          type="text"
-          value={formData[field.name]}
-          onChange={(e) => handleChange(field.name, e.target.value)}
-          onBlur={() => handleBlur(field.name)}
-          required={field.required}
-        />
-      )}
-
-      {field.name === 'path' && field.type === 'text' && (
-        <div style={{ marginTop: '0.25rem' }}>
-          <button type="button" onClick={handleAutoFill} disabled={analyzing}>
-            {analyzing ? 'Analyzing...' : '⚡ Auto-fill from file'}
-          </button>
-          {analyzeMessage && (
-            <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>{analyzeMessage}</p>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <input
+            type="text"
+            value={formData[field.name]}
+            onChange={(e) => handleChange(field.name, e.target.value)}
+            onBlur={() => handleBlur(field.name)}
+            required={field.required}
+            style={{ flex: 1, minWidth: 0 }}
+          />
+          {autoFills[field.name] && (
+            <button
+              type="button"
+              onClick={autoFills[field.name].onClick}
+              disabled={autoFills[field.name].busy}
+              style={{ flexShrink: 0, width: '10.5rem' }}
+            >
+              {autoFills[field.name].busy ? autoFills[field.name].busyLabel : autoFills[field.name].label}
+            </button>
           )}
         </div>
       )}
-
-      {field.name === 'creation_log_path' && (
-        <div style={{ marginTop: '0.25rem' }}>
-          <button type="button" onClick={handleLogAutoFill} disabled={readingLog}>
-            {readingLog ? 'Reading log...' : '⚡ Auto-fill from log'}
-          </button>
-          {logMessage && (
-            <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>{logMessage}</p>
-          )}
-        </div>
+      {autoFills[field.name]?.message && (
+        <p style={{ fontSize: '0.8rem', color: '#666', margin: '0.1rem 0 0' }}>{autoFills[field.name].message}</p>
       )}
 
       {field.type === 'readonly' && (
@@ -257,6 +266,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
           values={formData[field.name]}
           options={fieldOptions[field.name] || []}
           onChange={(vals) => handleChange(field.name, vals)}
+          pickExisting={field.pickExisting !== false}
         />
       )}
 
@@ -274,21 +284,34 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   );
 
   return (
-    <form onSubmit={handleSubmit} style={{ marginBottom: '2rem' }}>
+    <form onSubmit={handleSubmit} style={{ marginBottom: '2rem', maxWidth: '860px' }}>
       <h2>Add Library</h2>
 
       {FIELD_GROUPS.map((group) => {
         const groupFields = FORM_FIELDS.filter((f) => f.group === group);
+        // Fields of one subgroup share a row; a group without them is one grid.
+        // Every row has the same tracks, so short rows line up.
+        const rows = [...new Set(groupFields.map((f) => f.subgroup))]
+          .map((subgroup) => [subgroup, groupFields.filter((f) => f.subgroup === subgroup)]);
         return (
           <fieldset key={group} style={{ marginBottom: '1.25rem', border: '1px solid #ddd', borderRadius: '6px', padding: '1rem' }}>
             <legend style={{ fontWeight: 'bold', padding: '0 0.5rem' }}>{group}</legend>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              gap: '1rem',
-            }}>
-              {groupFields.map(renderField)}
-            </div>
+            {rows.map(([subgroup, fields], i) => (
+              <div key={subgroup || group} style={{ marginTop: i ? '1rem' : 0 }}>
+                {subgroup && (
+                  <div style={{ fontSize: '0.75rem', color: '#666', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.4rem' }}>
+                    {subgroup}
+                  </div>
+                )}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${GRID_TRACKS}, minmax(0, 1fr))`,
+                  gap: '1rem',
+                }}>
+                  {fields.map(renderField)}
+                </div>
+              </div>
+            ))}
           </fieldset>
         );
       })}
