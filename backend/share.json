@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "How each machine reaches the lab share. The catalog stores paths relative",
+    "to it, so a library catalogued from a Mac and the same library catalogued",
+    "from Windows come out identical -- see app/share.py.",
+    "",
+    "server_root is how THIS server reaches the share. Use the UNC path, not a",
+    "mapped drive: mapped drives belong to a logged-in session and do not exist",
+    "for a Windows service, so L:\\ resolves to nothing once SpecVault runs as",
+    "one.",
+    "",
+    "mounts is every prefix a person might paste, and which flavour of path to",
+    "show them back. CHECK THE mac AND linux PREFIXES against how people",
+    "actually mount the share -- a prefix that is wrong here does not break",
+    "anything quietly, it rejects those users' paths as 'not on the share'.",
+    "",
+    "require_on_share: false lets libraries outside the share be catalogued.",
+    "Leave it true -- an entry nobody else can open defeats the point."
+  ],
+
+  "server_root": "\\\\PTI\\Lab",
+
+  "mounts": [
+    { "os": "windows", "prefix": "\\\\PTI\\Lab" },
+    { "os": "windows", "prefix": "L:" },
+    { "os": "mac", "prefix": "/Volumes/Lab" },
+    { "os": "linux", "prefix": "/mnt/lab" }
+  ],
+
+  "require_on_share": true
+}

@@ -8,12 +8,12 @@ from datetime import datetime
 from typing import List, NamedTuple, Optional, Tuple
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import creation_log, library_stats, models, mods, schemas
+from .. import creation_log, library_stats, models, mods, schemas, share
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -559,9 +559,104 @@ def _clean_path(value: str) -> str:
     return path
 
 
+# Paths the catalog stores are share-relative, so that the same library added
+# from Windows, a Mac and a Linux box is one entry rather than three. Paths
+# arriving in a request are whatever the person pasted, and are translated on
+# the way in; see app/share.py.
+
+
+def _store_path(value: Optional[str], field: str) -> Optional[str]:
+    """The form a path is stored in, or a 400 saying why it cannot be.
+
+    Refusing a library off the share is the point rather than an inconvenience:
+    a catalog entry only its author can open claims the library is available to
+    everyone when it is not.
+    """
+    if value is None:
+        return None
+    cleaned = _clean_path(value)
+    if not cleaned:
+        return None
+    if not share.configured():
+        return cleaned
+    canonical = share.to_canonical(cleaned)
+    if canonical is not None:
+        return canonical
+    if not share.CONFIG.require_on_share:
+        return cleaned
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"{field} is not on the lab share, so nobody else could open it. "
+            f"Paths should start with one of: {share.describe_mounts()}. Got: {cleaned}"
+        ),
+    )
+
+
+# Which flavour of path to show someone back, from the browser that asked.
+# Getting this wrong is cosmetic -- the path still identifies the same file --
+# so an unfamiliar browser gets the server's own spelling rather than an error.
+_PLATFORMS = [("windows", share.WINDOWS), ("mac os", share.MAC), ("macintosh", share.MAC),
+              ("linux", share.LINUX), ("x11", share.LINUX)]
+
+
+def _viewer_os(user_agent: Optional[str]) -> str:
+    agent = (user_agent or "").lower()
+    return next((flavour for token, flavour in _PLATFORMS if token in agent), share.WINDOWS)
+
+
+# The paths the catalog owns. source_runs are deliberately not here: they name
+# raw files that may sit on an instrument's own storage, or have since been
+# deleted, and refusing a library because its runs moved would help nobody.
+PATH_FIELDS = ("path", "creation_log_path", "fasta_path")
+
+
+def _display(stored: Optional[str], flavour: str) -> Optional[str]:
+    """A stored path written for *flavour*. Several FASTAs are one field joined
+    by "; ", so each part is rendered rather than the string as a whole."""
+    if not stored or not share.configured():
+        return stored
+    return "; ".join(share.to_display(part, flavour) for part in stored.split("; ") if part)
+
+
+def _log_for_viewer(log: dict, flavour: str) -> dict:
+    """The paths a log yielded, written for the machine that asked.
+
+    A log records paths as the machine that ran the software saw them, and
+    creation_log.read() has already translated those onto this server. Left
+    there, Auto-fill would drop the server's own spelling into a Mac user's
+    form -- correct, and not what they would have typed.
+    """
+    if not share.configured():
+        return log
+    rendered = dict(log)
+    for field in ("creation_log_path", "fasta_path"):
+        if rendered.get(field):
+            rendered[field] = _display(_store_or_keep(rendered[field]), flavour)
+    if rendered.get("source_runs"):
+        rendered["source_runs"] = [
+            _display(_store_or_keep(run), flavour) for run in rendered["source_runs"]
+        ]
+    return rendered
+
+
+def _store_or_keep(path: str) -> str:
+    """The share-relative form where there is one, otherwise the path itself.
+    Used for paths that are reported rather than stored, which may legitimately
+    point off the share."""
+    return "; ".join(
+        share.to_canonical(part) or part for part in path.split("; ") if part
+    )
+
+
 @router.post("/analyze", response_model=schemas.AnalyzeResponse)
-def analyze_library(payload: schemas.AnalyzeRequest):
-    path = _clean_path(payload.path)
+def analyze_library(
+    payload: schemas.AnalyzeRequest,
+    user_agent: Optional[str] = Header(default=None),
+):
+    # Pasted from whichever machine the person is on, so translated to this
+    # server's view of the share before anything is opened.
+    path = share.resolve(_clean_path(payload.path))
 
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
@@ -592,10 +687,11 @@ def analyze_library(payload: schemas.AnalyzeRequest):
         notes.append(report.note)
 
     # The creation log: the one given, or else one where its software leaves it
-    given = _clean_path(payload.creation_log_path) if payload.creation_log_path else ""
+    given = share.resolve(_clean_path(payload.creation_log_path)) if payload.creation_log_path else ""
     log, log_note = _read_log(given or creation_log.find(path), given=bool(given))
     if log_note:
         notes.append(log_note)
+    log = _log_for_viewer(log, _viewer_os(user_agent))
 
     return schemas.AnalyzeResponse(
         precursors=analysis.precursors,
@@ -611,10 +707,13 @@ def analyze_library(payload: schemas.AnalyzeRequest):
 
 
 @router.post("/analyze-log", response_model=schemas.LogResponse)
-def analyze_log(payload: schemas.LogRequest):
+def analyze_log(
+    payload: schemas.LogRequest,
+    user_agent: Optional[str] = Header(default=None),
+):
     """Auto-fill from the creation log alone, without reading the library."""
-    log, note = _read_log(_clean_path(payload.path), given=True)
-    return schemas.LogResponse(**log, warning=note)
+    log, note = _read_log(share.resolve(_clean_path(payload.path)), given=True)
+    return schemas.LogResponse(**_log_for_viewer(log, _viewer_os(user_agent)), warning=note)
 
 
 def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
@@ -640,7 +739,7 @@ def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
 
 @router.post("/hash-file")
 def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since it's just {path: str}
-    path = _clean_path(payload.path)
+    path = share.resolve(_clean_path(payload.path))
 
     if not os.path.exists(path):
         return {"error": "File not found at that path"}
@@ -651,18 +750,28 @@ def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since 
 
     return {"content_hash": file_hash}
 
-def _to_response(lib: models.Library) -> schemas.LibraryResponse:
+def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.LibraryResponse:
     data = schemas.LibraryResponse.model_validate(lib)
-    exists = os.path.exists(lib.path)
+    # The stored path is share-relative; the file lives wherever this server
+    # reaches the share.
+    local = share.resolve(lib.path)
+    exists = os.path.exists(local)
     data.path_exists = exists
+
+    # Written the way the machine asking for it writes paths, so that the path
+    # shown -- and the one the Copy button puts on the clipboard -- is one that
+    # works when pasted into that person's own shell or file manager.
+    data.display_path = share.to_display(lib.path, flavour) if share.configured() else lib.path
+    data.display_creation_log_path = _display(lib.creation_log_path, flavour)
+    data.display_fasta_path = _display(lib.fasta_path, flavour)
 
     _, ext = os.path.splitext(lib.path)
     data.file_format = ext.lstrip('.').upper() if ext else None
 
     if exists:
         try:
-            data.file_size = os.path.getsize(lib.path)
-            data.updated_at = datetime.fromtimestamp(os.path.getmtime(lib.path))
+            data.file_size = os.path.getsize(local)
+            data.updated_at = datetime.fromtimestamp(os.path.getmtime(local))
         except OSError:
             data.file_size = None
             data.updated_at = None
@@ -707,9 +816,15 @@ def get_field_options(db: Session = Depends(get_db)):
 
 
 @router.post("/", response_model=schemas.LibraryResponse, status_code=201)
-def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)):
+def create_library(
+    library: schemas.LibraryCreate,
+    user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
     data = library.model_dump()
-    data.update(_file_facts(data["path"]))
+    for field in PATH_FIELDS:
+        data[field] = _store_path(data.get(field), field)
+    data.update(_file_facts(share.resolve(data["path"])))
     db_library = models.Library(**data)
     db.add(db_library)
     try:
@@ -718,18 +833,26 @@ def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)
         db.rollback()
         raise HTTPException(status_code=409, detail="A library with this path already exists")
     db.refresh(db_library)
-    return _to_response(db_library)
+    return _to_response(db_library, _viewer_os(user_agent))
 
 @router.patch("/{library_id}", response_model=schemas.LibraryResponse)
-def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session = Depends(get_db)):
+def update_library(
+    library_id: int,
+    updates: schemas.LibraryUpdate,
+    user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
     library = db.query(models.Library).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
     update_data = updates.model_dump(exclude_unset=True)
+    for field in PATH_FIELDS:
+        if field in update_data:
+            update_data[field] = _store_path(update_data[field], field)
     for field, value in update_data.items():
         setattr(library, field, value)
     if "path" in update_data:  # a different file: its hash, table and counts are its own
-        for field, value in _file_facts(library.path).items():
+        for field, value in _file_facts(share.resolve(library.path)).items():
             setattr(library, field, value)
     try:
         db.commit()
@@ -737,13 +860,14 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
         db.rollback()
         raise HTTPException(status_code=409, detail="A library with this path already exists")
     db.refresh(library)
-    return _to_response(library)
+    return _to_response(library, _viewer_os(user_agent))
 
 @router.get("/", response_model=List[schemas.LibraryResponse])
 def list_libraries(
     response: Response,
     skip: int = Query(0, ge=0),
     limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    user_agent: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
     # X-Total-Count lets the client tell a complete result from a truncated page.
@@ -759,14 +883,19 @@ def list_libraries(
         .limit(limit)
         .all()
     )
-    return [_to_response(row) for row in rows]
+    flavour = _viewer_os(user_agent)
+    return [_to_response(row, flavour) for row in rows]
 
 @router.get("/{library_id}", response_model=schemas.LibraryResponse)
-def get_library(library_id: int, db: Session = Depends(get_db)):
+def get_library(
+    library_id: int,
+    user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
     library = db.query(models.Library).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
-    return _to_response(library)
+    return _to_response(library, _viewer_os(user_agent))
 
 @router.delete("/{library_id}", status_code=204)
 def delete_library(library_id: int, db: Session = Depends(get_db)):

@@ -4,7 +4,7 @@ import FilterBar from './FilterBar';
 import ModDetails from './ModDetails';
 import LibraryDetails from './LibraryDetails';
 import FileDetails from './FileDetails';
-import { PRIMARY_FIELDS, GRID_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS } from './libraryFields';
+import { PRIMARY_FIELDS, GRID_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS, valueOf } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
 import { libraryUrl } from './api';
 
@@ -22,7 +22,7 @@ const defaultFilters = () => {
 };
 
 function renderCellValue(field, lib) {
-  const value = lib[field.name];
+  const value = valueOf(field, lib);
   if (field.name === 'path_exists') return value ? '✅' : '❌';
   if (field.name === 'file_size') return formatBytes(value);
   if (field.name === 'updated_at' || field.name === 'date_created') return formatDate(value);
@@ -97,7 +97,9 @@ function App() {
         const filterValue = filters[field.name];
         if (!filterValue) return true;
         if (field.filterType === 'text') {
-          const cellValue = (lib[field.name] || '').toString().toLowerCase();
+          // Matched against what is on screen: someone filtering paths types
+          // what their own machine calls the folder, not the stored form.
+          const cellValue = (valueOf(field, lib) || '').toString().toLowerCase();
           return cellValue.includes(filterValue.toLowerCase());
         }
         if (field.filterType === 'select') return lib[field.name] === filterValue;

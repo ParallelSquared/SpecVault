@@ -103,6 +103,12 @@ class LibraryResponse(LibraryBase):
     path_exists: bool = False
     file_format: Optional[str] = None
     file_size: Optional[int] = None  # bytes; frontend formats for display
+    # The stored paths above are share-relative, which is what makes the same
+    # library one entry whoever adds it. These are the same paths written the
+    # way the machine that asked writes them -- what the UI shows and copies.
+    display_path: Optional[str] = None
+    display_creation_log_path: Optional[str] = None
+    display_fasta_path: Optional[str] = None
 
 # New schemas for the analyze endpoint
 class AnalyzeRequest(BaseModel):

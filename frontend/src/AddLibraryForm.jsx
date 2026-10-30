@@ -39,6 +39,23 @@ const withLogFields = (prev, body) => ({
   vendor: body.vendor ?? prev.vendor,
 });
 
+// FastAPI's `detail` is a sentence for the errors we raise ourselves -- a path
+// off the share says so in words -- but a list of objects when validation
+// fails. Stringifying the whole thing put raw JSON in front of the user.
+const describeError = (body, status) => {
+  const detail = body?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((e) => {
+        const field = (e.loc || []).filter((p) => p !== 'body').join('.');
+        return field ? `${field}: ${e.msg}` : e.msg;
+      })
+      .join('; ');
+  }
+  return `Server responded with ${status}`;
+};
+
 const logRead = (body) =>
   body.software_version
     ? `Read the ${body.search_algorithm} ${body.software_version} log at ${body.creation_log_path}.`
@@ -158,9 +175,9 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
         body: JSON.stringify(payload),
       });
 
+      const body = await res.json().catch(() => null);
       if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.detail ? JSON.stringify(body.detail) : `Server responded with ${res.status}`);
+        throw new Error(describeError(body, res.status));
       }
 
       setFormData(emptyForm());

@@ -3,8 +3,12 @@ export const LIBRARY_FIELDS = [
   // wide: a row of its own (in the Add form, and when browsing)
   // span: how many of the Add form's six tracks it takes; a field is 2, half a row is 3
   // file: a path, shown when browsing under Show files rather than in the field grid
-  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true },
-  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true, file: true },
+  // displayAs: the server sends paths both ways — `path` is share-relative and
+  // is what identifies the library, `display_path` is the same path written
+  // the way the machine asking for it writes paths. Everything the user reads,
+  // filters or copies uses the second.
+  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true, displayAs: 'display_path' },
+  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true, file: true, displayAs: 'display_creation_log_path' },
   { name: 'creator', label: 'Creator', type: 'combobox', required: true, filterType: 'select', group: 'Core Info', primary: true },
   { name: 'project', label: 'Project', type: 'combobox', required: false, filterType: 'select', group: 'Core Info', primary: false },
   { name: 'tags', label: 'Tags', type: 'multicombobox', required: true, filterType: 'multiselect', group: 'Core Info', primary: true },
@@ -42,7 +46,7 @@ export const LIBRARY_FIELDS = [
 
 
   // --- Files & Notes ---
-  { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false, span: 3, file: true },
+  { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false, span: 3, file: true, displayAs: 'display_fasta_path' },
   // pickExisting: false -- runs belong to one library; offering every other library's is noise
   { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, span: 3, file: true, pickExisting: false },
   { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false, wide: true },
@@ -66,6 +70,10 @@ export const COMPUTED_FIELDS = [
   },
   { name: 'decoys', label: 'Decoys', filterType: null, primary: false },
 ];
+
+// What a field reads as for this library: the display spelling where the field
+// has one, so that what is shown, filtered and copied are the same string.
+export const valueOf = (field, lib) => lib[field.displayAs ?? field.name] ?? lib[field.name];
 
 export const ALL_DISPLAY_FIELDS = [...LIBRARY_FIELDS, ...COMPUTED_FIELDS];
 export const PRIMARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => f.primary);

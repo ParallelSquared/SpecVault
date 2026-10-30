@@ -46,6 +46,7 @@ npm run dev
 | File | Variable | Default |
 |---|---|---|
 | `backend/.env` | `DATABASE_URL` | `sqlite:///./specvault.db` |
+| `backend/.env` | `SHARE_CONFIG` | `backend/share.json` |
 | `frontend/.env` | `VITE_API_BASE` | `http://127.0.0.1:8000` |
 
 Both are gitignored; each directory has a committed `.env.example` to copy.
@@ -81,6 +82,61 @@ comes out as a drop and an add, which discards that column's data, and wants a
 hand-written `batch_op.alter_column(..., new_column_name=...)` instead.
 
 `tests/test_migrations.py` fails if you skip step 5, and names the column.
+
+## The lab share
+
+The same library file has a different path on every machine — `L:\Libraries\foo.tsv`
+on a Windows box with the drive mapped, `\\PTI\Lab\Libraries\foo.tsv` on one
+without, `/Volumes/Lab/Libraries/foo.tsv` on a Mac, `/mnt/lab/Libraries/foo.tsv`
+on Linux. There is no absolute path that works everywhere, so the catalog does
+not store one: it stores `Libraries/foo.tsv`, the path *within* the share, and
+each side renders it the way its own machine writes paths.
+
+Three things follow from that:
+
+- Adding the same library from a Mac and from Windows produces the same stored
+  path, so it is one entry rather than two.
+- Everyone is shown — and copies — paths their own machine understands. The
+  browser's `User-Agent` decides which.
+- A path matching none of the known mounts is not on the share, so it is
+  refused. A catalog entry only its author can open claims the library is
+  available to everyone when it is not.
+
+`backend/share.json` says how each machine reaches the share:
+
+```json
+{
+  "server_root": "\\\\PTI\\Lab",
+  "mounts": [
+    { "os": "windows", "prefix": "\\\\PTI\\Lab" },
+    { "os": "windows", "prefix": "L:" },
+    { "os": "mac", "prefix": "/Volumes/Lab" },
+    { "os": "linux", "prefix": "/mnt/lab" }
+  ],
+  "require_on_share": true
+}
+```
+
+| Key | |
+|---|---|
+| `server_root` | how **this server** reaches the share. Use the UNC path — a mapped drive belongs to a logged-in session and does not exist for a Windows service |
+| `mounts` | every prefix someone might paste, and which flavour to show back. Where a flavour has several, **the first is the one displayed** |
+| `require_on_share` | `false` allows libraries outside the share. Leave it `true` |
+
+Check the `mac` and `linux` prefixes against how people actually mount the
+share. A wrong one does not fail quietly — it rejects those users' paths as
+not being on the share.
+
+Without `share.json`, or with a malformed one, the catalog stores paths exactly
+as they are typed and refuses nothing, which is how it behaved before any of
+this existed. `SHARE_CONFIG` points somewhere else if you need it to.
+
+**Put `share.json` in place before the server's first start on a catalog that
+already holds libraries.** The migration that converts existing paths can only
+run once; started without a share it would have nothing to convert against,
+and the paths would stay absolute for good. Rather than let that happen
+quietly it refuses to run, naming what to do — an empty catalog has nothing to
+lose and starts normally either way.
 
 ## Migrations
 

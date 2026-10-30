@@ -29,11 +29,16 @@ function PathLine({ path }) {
 
 function FileDetails({ lib }) {
   const [open, setOpen] = useState(false);
+  // The display_* paths: the same files, written the way this machine writes
+  // paths, so Copy puts something on the clipboard that works when pasted.
+  const library = lib.display_path || lib.path;
+  const log = lib.display_creation_log_path || lib.creation_log_path;
+  const fasta = lib.display_fasta_path || lib.fasta_path;
   const groups = [
-    ['Library', [lib.path]],
-    ['Creation log', lib.creation_log_path ? [lib.creation_log_path] : []],
+    ['Library', [library]],
+    ['Creation log', log ? [log] : []],
     // Several FASTAs are saved as one field, joined by "; "
-    ['FASTA', lib.fasta_path ? lib.fasta_path.split('; ') : []],
+    ['FASTA', fasta ? fasta.split('; ') : []],
     ['Source runs', lib.source_runs || []],
   ].filter(([, paths]) => paths.length);
   const count = groups.reduce((n, [, paths]) => n + paths.length, 0);
