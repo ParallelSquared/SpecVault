@@ -22,7 +22,7 @@ function MultiComboBoxField({ label, values, options, onChange }) {
     <div style={{ display: 'inline-block' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
         {selected.map((val) => (
-          <span key={val} style={{ background: '#eee', padding: '2px 6px', borderRadius: '4px' }}>
+          <span key={val} style={{ background: '#eee', padding: '2px 6px', borderRadius: '4px', maxWidth: '100%', overflowWrap: 'anywhere' }}>
             {val}{' '}
             <button
               type="button"

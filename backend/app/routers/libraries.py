@@ -5,7 +5,7 @@ import threading
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional, Tuple
 
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import library_stats, models, mods, schemas
+from .. import creation_log, library_stats, models, mods, schemas
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -428,7 +428,7 @@ class _PerFile:
         self.get_or_make(identity, lambda: value)
 
 
-_MOD_TABLES = _PerFile()
+_ANALYSES = _PerFile()
 _HASHES = _PerFile()
 
 # Hashing reads every byte of the file. SHA-256 already runs at the fastest
@@ -498,45 +498,70 @@ def _result(job: Optional[Future]) -> Optional[str]:
         return None
 
 
-def _remember_mod_table(path: str, details: list) -> None:
+class FileAnalysis(NamedTuple):
+    """What Save keeps from parsing the library: everything read off the parsed
+    rows, so one parse serves them all."""
+    mod_details: list
+    precursors: Optional[int]
+    proteins: Optional[int]
+
+
+def _analyse(df: pl.DataFrame, report: ModReport) -> FileAnalysis:
+    return FileAnalysis(report.details, _determine_precursors(df), _determine_proteins(df))
+
+
+def _remember_analysis(path: str, analysis: FileAnalysis) -> None:
     identity = _file_identity(path)
     if identity is not None:
-        _MOD_TABLES.put(identity, details)
+        _ANALYSES.put(identity, analysis)
 
 
-def _build_mod_table(path: str) -> Optional[list]:
+def _build_analysis(path: str) -> Optional[FileAnalysis]:
     try:
-        return _mod_report(_read_library_df(path)).details
+        df = _read_library_df(path)
+        return _analyse(df, _mod_report(df))
     except Exception:
         return None
 
 
-def _mod_table_for(path: str) -> Optional[list]:
-    """The mod table for the file at *path* as it is now: the one Auto-fill built
-    if the file has not changed since, otherwise a fresh analysis. None when the
+def _analysis_for(path: str) -> Optional[FileAnalysis]:
+    """The analysis of the file at *path* as it is now: the one Auto-fill made
+    if the file has not changed since, otherwise a fresh one. None when the
     file cannot be read -- a library on a share that is not mounted is still
-    saved, it just has no table until it is reachable."""
+    saved, it just has no table or counts until it is reachable."""
     identity = _file_identity(path)
     if identity is None:
         return None
-    return _MOD_TABLES.get_or_make(identity, lambda: _build_mod_table(path))
+    return _ANALYSES.get_or_make(identity, lambda: _build_analysis(path))
 
 
-def _file_facts(path: str):
-    """(content hash, mod table, library stats) for the file at *path*. Whatever
-    was not worked out in advance runs at once: the hash and the stats in the
-    background while the parse happens here, so it takes as long as the slowest
-    of the three, not their sum."""
+def _file_facts(path: str) -> dict:
+    """The library's fields that come from the file at *path*: its hash, mod
+    table, counts and stats. Whatever was not worked out in advance runs at
+    once: the hash and the stats in the background while the parse happens
+    here, so it takes as long as the slowest, not their sum."""
     hash_job, stats_job = _start_hash(path), _start_stats(path)
-    mod_table = _mod_table_for(path)
-    return _result(hash_job), mod_table, _result(stats_job)
+    analysis = _analysis_for(path)
+    return {
+        "content_hash": _result(hash_job),
+        "mod_details": analysis.mod_details if analysis else None,
+        "precursors": analysis.precursors if analysis else None,
+        "proteins": analysis.proteins if analysis else None,
+        "library_stats": _result(stats_job),
+    }
+
+
+def _clean_path(value: str) -> str:
+    """A pasted path without the whitespace and quotes Windows' "Copy as path" adds."""
+    path = value.strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
+        path = path[1:-1].strip()
+    return path
 
 
 @router.post("/analyze", response_model=schemas.AnalyzeResponse)
 def analyze_library(payload: schemas.AnalyzeRequest):
-    path = payload.path.strip()
-    if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
-        path = path[1:-1].strip()
+    path = _clean_path(payload.path)
 
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
@@ -553,7 +578,8 @@ def analyze_library(payload: schemas.AnalyzeRequest):
     # One pass over the modifications, read three ways; it is the expensive
     # part of the analysis, so it is not repeated per field.
     report = _mod_report(df)
-    _remember_mod_table(path, report.details)
+    analysis = _analyse(df, report)
+    _remember_analysis(path, analysis)
 
     notes = []
     missing = _find_missing_columns(df)
@@ -565,22 +591,55 @@ def analyze_library(payload: schemas.AnalyzeRequest):
     if report.note:
         notes.append(report.note)
 
+    # The creation log: the one given, or else one where its software leaves it
+    given = _clean_path(payload.creation_log_path) if payload.creation_log_path else ""
+    log, log_note = _read_log(given or creation_log.find(path), given=bool(given))
+    if log_note:
+        notes.append(log_note)
+
     return schemas.AnalyzeResponse(
-        precursors=_determine_precursors(df),
-        proteins=_determine_proteins(df),
+        precursors=analysis.precursors,
+        proteins=analysis.proteins,
         protease=_determine_protease(df),
         carbamidomethylated=report.carbamidomethylated,
         ptms=report.ptms,
         tags=report.tags,
         mod_details=[schemas.ModDetail(**detail) for detail in report.details],
+        **log,
         warning=" ".join(notes) if notes else None,
     )
 
+
+@router.post("/analyze-log", response_model=schemas.LogResponse)
+def analyze_log(payload: schemas.LogRequest):
+    """Auto-fill from the creation log alone, without reading the library."""
+    log, note = _read_log(_clean_path(payload.path), given=True)
+    return schemas.LogResponse(**log, warning=note)
+
+
+def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
+    """The LogResponse fields for the log at *path*, and a note when a log the
+    user *given* could not be used. One looked for and not found is no news."""
+    if not path:
+        return {}, None
+    if not os.path.isfile(path):
+        return {"creation_log_path": path}, "No creation log was found at that path."
+    log = creation_log.read(path)
+    if log is None:
+        return ({"creation_log_path": path}, creation_log.UNRECOGNISED) if given else ({}, None)
+    return {
+        "creation_log_path": log.path,
+        "search_algorithm": log.software,
+        "software_version": log.version,
+        "date_generated": log.generated,
+        "fasta_path": "; ".join(log.fasta) or None,
+        "source_runs": log.runs,
+        "mbr": log.mbr,
+    }, None
+
 @router.post("/hash-file")
 def hash_file(payload: schemas.AnalyzeRequest):  # reusing AnalyzeRequest since it's just {path: str}
-    path = payload.path.strip()
-    if len(path) >= 2 and path[0] == path[-1] and path[0] in ('"', "'"):
-        path = path[1:-1].strip()
+    path = _clean_path(payload.path)
 
     if not os.path.exists(path):
         return {"error": "File not found at that path"}
@@ -623,7 +682,7 @@ def _to_response(lib: models.Library) -> schemas.LibraryResponse:
 def get_field_options(db: Session = Depends(get_db)):
     simple_fields = [
         "creator", "instrument", "acquisition_type", "species",
-        "project", "finetuning", "search_algorithm", "protease",
+        "project", "finetuning", "search_algorithm", "software_version", "protease",
         "in_silico",
     ]
     options = {}
@@ -649,7 +708,7 @@ def get_field_options(db: Session = Depends(get_db)):
 @router.post("/", response_model=schemas.LibraryResponse, status_code=201)
 def create_library(library: schemas.LibraryCreate, db: Session = Depends(get_db)):
     data = library.model_dump()
-    data["content_hash"], data["mod_details"], data["library_stats"] = _file_facts(data["path"])
+    data.update(_file_facts(data["path"]))
     db_library = models.Library(**data)
     db.add(db_library)
     try:
@@ -668,8 +727,9 @@ def update_library(library_id: int, updates: schemas.LibraryUpdate, db: Session 
     update_data = updates.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(library, field, value)
-    if "path" in update_data:  # a different file: its hash and mod table are its own
-        library.content_hash, library.mod_details, library.library_stats = _file_facts(library.path)
+    if "path" in update_data:  # a different file: its hash, table and counts are its own
+        for field, value in _file_facts(library.path).items():
+            setattr(library, field, value)
     try:
         db.commit()
     except IntegrityError:

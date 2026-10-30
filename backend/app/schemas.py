@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -34,6 +34,10 @@ class LibraryBase(BaseModel):
     project: Optional[str] = None
     finetuning: Optional[str] = None
     search_algorithm: Optional[str] = None
+    software_version: Optional[str] = None
+    date_generated: Optional[date] = None
+    mbr: Optional[bool] = None
+    source_runs: Optional[List[str]] = None
     notes: Optional[str] = None
     cell_types: Optional[List[str]] = None
     tissues: Optional[List[str]] = None
@@ -41,8 +45,6 @@ class LibraryBase(BaseModel):
     carbamidomethylated: Optional[bool] = None
     ptms: Optional[List[str]] = None
     creation_log_path: Optional[str] = None
-    precursors: Optional[int] = None
-    proteins: Optional[int] = None
     fasta_path: Optional[str] = None
     in_silico: Optional[str] = None
 
@@ -69,6 +71,10 @@ class LibraryUpdate(BaseModel):
     project: Optional[str] = None
     finetuning: Optional[str] = None
     search_algorithm: Optional[str] = None
+    software_version: Optional[str] = None
+    date_generated: Optional[date] = None
+    mbr: Optional[bool] = None
+    source_runs: Optional[List[str]] = None
     notes: Optional[str] = None
     cell_types: Optional[List[str]] = None
     tissues: Optional[List[str]] = None
@@ -76,8 +82,6 @@ class LibraryUpdate(BaseModel):
     carbamidomethylated: Optional[bool] = None
     ptms: Optional[List[str]] = None
     creation_log_path: Optional[str] = None
-    precursors: Optional[int] = None
-    proteins: Optional[int] = None
     fasta_path: Optional[str] = None
     in_silico: Optional[str] = None
 
@@ -86,6 +90,8 @@ class LibraryResponse(LibraryBase):
     id: int
     # Built by the server from the saved file, never taken from a request
     content_hash: Optional[str] = None
+    precursors: Optional[int] = None
+    proteins: Optional[int] = None
     mod_details: Optional[List[ModDetail]] = None
     library_stats: Optional[dict] = None  # precursors, fragments, digest
     ion_mobility: Optional[bool] = None   # read off library_stats
@@ -99,8 +105,25 @@ class LibraryResponse(LibraryBase):
 # New schemas for the analyze endpoint
 class AnalyzeRequest(BaseModel):
     path: str
+    # The creation log, if the user has given one; otherwise one is looked for
+    # in the library's folder
+    creation_log_path: Optional[str] = None
 
-class AnalyzeResponse(BaseModel):
+class LogRequest(BaseModel):
+    path: str
+
+class LogResponse(BaseModel):
+    """What the creation log says, when one was given or found."""
+    creation_log_path: Optional[str] = None
+    search_algorithm: Optional[str] = None
+    software_version: Optional[str] = None
+    date_generated: Optional[date] = None
+    fasta_path: Optional[str] = None
+    source_runs: List[str] = []
+    mbr: Optional[bool] = None
+    warning: Optional[str] = None  # e.g. "file read but some columns missing"
+
+class AnalyzeResponse(LogResponse):
     precursors: Optional[int] = None
     proteins: Optional[int] = None
     protease: Optional[str] = None
@@ -108,7 +131,6 @@ class AnalyzeResponse(BaseModel):
     ptms: List[str] = []
     tags: List[str] = []
     mod_details: List[ModDetail] = []
-    warning: Optional[str] = None  # e.g. "file read but some columns missing"
 
 class HashLookupRequest(BaseModel):
     path: str

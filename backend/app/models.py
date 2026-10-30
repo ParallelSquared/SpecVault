@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, Date, DateTime, Integer, JSON, String, Text
 from sqlalchemy.sql import func
 
 from .database import Base
@@ -18,6 +18,10 @@ class Library(Base):
     project = Column(String, nullable=True)
     finetuning = Column(String, nullable=True)
     search_algorithm = Column(String, nullable=True)
+    software_version = Column(String, nullable=True)   # e.g. "2.5.0", from the creation log
+    date_generated = Column(Date, nullable=True)       # when the library was built
+    mbr = Column(Boolean, nullable=True)               # built with match-between-runs
+    source_runs = Column(JSON, nullable=True)          # list[str], the runs it was built from
     notes = Column(Text, nullable=True)
     cell_types = Column(JSON, nullable=True)      # list[str]
     tissues = Column(JSON, nullable=True)          # list[str]

@@ -1,17 +1,27 @@
 export const LIBRARY_FIELDS = [
   // --- Core Info ---
-  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true },
+  // wide: a row of its own, so the creation log sits under the path
+  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true },
+  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true },
   { name: 'creator', label: 'Creator', type: 'combobox', required: true, filterType: 'select', group: 'Core Info', primary: true },
   { name: 'project', label: 'Project', type: 'combobox', required: false, filterType: 'select', group: 'Core Info', primary: false },
   { name: 'tags', label: 'Tags', type: 'multicombobox', required: true, filterType: 'multiselect', group: 'Core Info', primary: true },
-  { name: 'precursors', label: 'Precursors', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false },
-  { name: 'proteins', label: 'Proteins', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false },
+  // form: false -- counted from the file on save and shown when browsing; never typed in
+  { name: 'precursors', label: 'Precursors', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false, form: false },
+  { name: 'proteins', label: 'Proteins', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false, form: false },
 
   // --- Method Info ---
   { name: 'in_silico', label: 'In-Silico', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
   { name: 'instrument', label: 'Instrument', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
   { name: 'acquisition_type', label: 'Acquisition Type', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
   { name: 'search_algorithm', label: 'Search Algorithm', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'software_version', label: 'Software Version', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
+  { name: 'date_generated', label: 'Date Generated', type: 'date', required: false, filterType: null, group: 'Method Info', primary: false },
+  {
+    name: 'mbr', label: 'MBR', type: 'boolean',
+    required: false, filterType: 'boolean', trueLabel: 'Yes', falseLabel: 'No',
+    group: 'Method Info', primary: false,
+  },
   { name: 'finetuning', label: 'Finetuning', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: false },
   { name: 'protease', label: 'Protease', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', primary: true },
   {
@@ -28,8 +38,8 @@ export const LIBRARY_FIELDS = [
 
 
   // --- Files & Notes ---
-  { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
   { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
+  { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, wide: true },
   { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false },
 ];
 

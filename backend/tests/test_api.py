@@ -230,7 +230,7 @@ from app.routers import libraries as lib_module  # noqa: E402
 @pytest.fixture(autouse=True)
 def fresh_mod_tables(monkeypatch):
     """Each test starts with nothing remembered from an earlier Auto-fill."""
-    monkeypatch.setattr(lib_module, "_MOD_TABLES", lib_module._PerFile())
+    monkeypatch.setattr(lib_module, "_ANALYSES", lib_module._PerFile())
     monkeypatch.setattr(lib_module, "_HASHES", lib_module._PerFile())
     monkeypatch.setattr(lib_module, "_STATS", lib_module._PerFile())
 
@@ -328,6 +328,52 @@ def test_changing_the_path_rebuilds_the_table(client, tmp_path):
     created = client.post("/libraries/", json={"path": str(first), "creator": "ZC"}).json()
     body = client.patch(f"/libraries/{created['id']}", json={"path": str(second)}).json()
     assert table_names(body) == {"UniMod:35"}
+
+
+def test_saving_counts_precursors_and_proteins_without_auto_fill(client, tmp_path):
+    path = write_library(tmp_path / "lib.tsv")
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert (body["precursors"], body["proteins"]) == (3, 3)
+
+
+def test_a_different_path_after_auto_fill_gets_its_own_counts(client, tmp_path):
+    """Auto-fill on one file, then another path typed in before saving; the
+    counts used to be whatever the form held from the first file."""
+    first = write_library(tmp_path / "first.tsv")
+    second = write_mods(tmp_path / "second.tsv", "PEPTIDEK")
+    client.post("/libraries/analyze", json={"path": str(first)})
+    body = client.post("/libraries/", json={"path": str(second), "creator": "ZC"}).json()
+    assert (body["precursors"], body["proteins"]) == (1, 1)
+
+
+def test_saving_straight_after_auto_fill_reuses_its_counts(client, tmp_path, reads):
+    path = write_library(tmp_path / "lib.tsv")
+    client.post("/libraries/analyze", json={"path": str(path)})
+    body = client.post("/libraries/", json={"path": str(path), "creator": "ZC"}).json()
+    assert reads["n"] == 1
+    assert (body["precursors"], body["proteins"]) == (3, 3)
+
+
+def test_counts_sent_with_the_request_are_ignored(client, tmp_path):
+    path = write_library(tmp_path / "lib.tsv")
+    created = client.post("/libraries/", json={"path": str(path), "creator": "ZC",
+                                               "precursors": 999, "proteins": 999}).json()
+    assert (created["precursors"], created["proteins"]) == (3, 3)
+    body = client.patch(f"/libraries/{created['id']}", json={"precursors": 1}).json()
+    assert body["precursors"] == 3
+
+
+def test_changing_the_path_recounts(client, tmp_path):
+    first = write_library(tmp_path / "first.tsv")
+    second = write_mods(tmp_path / "second.tsv", "PEPTIDEK")
+    created = client.post("/libraries/", json={"path": str(first), "creator": "ZC"}).json()
+    body = client.patch(f"/libraries/{created['id']}", json={"path": str(second)}).json()
+    assert (body["precursors"], body["proteins"]) == (1, 1)
+
+
+def test_an_unreachable_path_saves_without_counts(client):
+    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
+    assert (body["precursors"], body["proteins"]) == (None, None)
 
 
 def test_the_table_cannot_be_set_by_patch(client, tmp_path):
@@ -459,4 +505,101 @@ def test_changing_the_path_rebuilds_the_details(client, tmp_path):
 def test_an_unreachable_path_saves_without_details(client):
     body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
     assert body["library_stats"] is None and body["ion_mobility"] is None
+
+
+# ---------------------------------------------------------------- the creation log
+
+def write_diann_log(path, version="2.5.0", mbr=True):
+    path.write_text(
+        f"\nDIA-NN {version} Academia  (Data-Independent Acquisition by Neural Networks)\n"
+        "Current date and time: Tue Sep 29 16:10:05 2026\n"
+        rf"diann.exe --f {path.parent}\run1.raw --out {path.parent}\report.parquet"
+        rf" --fasta {path.parent}\human.fasta" + (" --reanalyse" if mbr else "") + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_auto_fill_reads_the_log_beside_the_library(client, tmp_path):
+    library = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    log = write_diann_log(tmp_path / "report.log.txt")
+    body = client.post("/libraries/analyze", json={"path": str(library)}).json()
+    assert body["creation_log_path"] == str(log)
+    assert body["search_algorithm"] == "DIA-NN"
+    assert body["software_version"] == "2.5.0"
+    assert body["date_generated"] == "2026-09-29"
+    assert body["fasta_path"] == str(tmp_path / "human.fasta")
+    assert body["source_runs"] == [str(tmp_path / "run1.raw")]
+    assert body["mbr"] is True
+
+
+def test_a_log_given_by_hand_is_used_instead(client, tmp_path):
+    library = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    write_diann_log(tmp_path / "report.log.txt", version="2.5.0")
+    elsewhere = tmp_path / "logs"
+    elsewhere.mkdir()
+    given = write_diann_log(elsewhere / "run.log.txt", version="1.9.2", mbr=False)
+    body = client.post("/libraries/analyze",
+                       json={"path": str(library), "creation_log_path": f'"{given}"'}).json()
+    assert body["software_version"] == "1.9.2"
+    assert body["mbr"] is False
+
+
+def test_a_given_log_in_no_known_format_is_reported(client, tmp_path):
+    library = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    notes = tmp_path / "notes.txt"
+    notes.write_text("just some notes\n", encoding="utf-8")
+    body = client.post("/libraries/analyze",
+                       json={"path": str(library), "creation_log_path": str(notes)}).json()
+    assert ("Unrecognised log format. Currently supported formats: DIA-NN, JMod."
+            in body["warning"])
+    assert body["software_version"] is None
+    assert body["creation_log_path"] == str(notes)  # kept as typed
+
+
+def test_no_log_anywhere_fills_nothing_from_one(client, tmp_path):
+    library = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    body = client.post("/libraries/analyze", json={"path": str(library)}).json()
+    assert body["creation_log_path"] is None
+    assert body["software_version"] is None
+    assert body["source_runs"] == []
+
+
+def test_the_log_fields_are_saved(client, tmp_path):
+    library = write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")
+    body = client.post("/libraries/", json={
+        "path": str(library), "creator": "ZC", "search_algorithm": "DIA-NN",
+        "software_version": "2.5.0", "date_generated": "2026-09-29", "mbr": "true",
+        "source_runs": ["D:/runs/run1.raw", "D:/runs/run2.raw"],
+    }).json()
+    assert (body["software_version"], body["date_generated"], body["mbr"]) == ("2.5.0", "2026-09-29", True)
+    assert body["source_runs"] == ["D:/runs/run1.raw", "D:/runs/run2.raw"]
+
+
+def test_software_versions_are_offered_as_options(client, make_library):
+    make_library("D:/libs/a.tsv", software_version="2.5.0")
+    make_library("D:/libs/b.tsv", software_version="1.9.2")
+    assert client.get("/libraries/options").json()["software_version"] == ["1.9.2", "2.5.0"]
+
+
+def test_the_log_alone_can_be_auto_filled(client, tmp_path):
+    log = write_diann_log(tmp_path / "report.log.txt")
+    body = client.post("/libraries/analyze-log", json={"path": f'"{log}"'}).json()
+    assert body["creation_log_path"] == str(log)
+    assert (body["search_algorithm"], body["software_version"], body["mbr"]) == ("DIA-NN", "2.5.0", True)
+    assert body["warning"] is None
+    assert "tags" not in body  # the library is not read
+
+
+def test_auto_filling_an_unrecognised_log_says_which_formats_are_known(client, tmp_path):
+    notes = tmp_path / "notes.log"
+    notes.write_text("just some notes\n", encoding="utf-8")
+    body = client.post("/libraries/analyze-log", json={"path": str(notes)}).json()
+    assert body["warning"] == "Unrecognised log format. Currently supported formats: DIA-NN, JMod."
+    assert body["search_algorithm"] is None
+
+
+def test_auto_filling_a_log_that_is_not_there_says_so(client, tmp_path):
+    body = client.post("/libraries/analyze-log", json={"path": str(tmp_path / "absent.log")}).json()
+    assert body["warning"] == "No creation log was found at that path."
 

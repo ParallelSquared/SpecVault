@@ -25,6 +25,9 @@ function renderCellValue(field, lib) {
   if (field.name === 'path_exists') return value ? '✅' : '❌';
   if (field.name === 'file_size') return formatBytes(value);
   if (field.name === 'updated_at' || field.name === 'date_created') return formatDate(value);
+  // A plain YYYY-MM-DD, shown as it is: going through Date would read it as UTC
+  // midnight and show the day before anywhere west of Greenwich
+  if (field.type === 'date') return value || '—';
   if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (value === null || value === undefined || value === '') return '—';

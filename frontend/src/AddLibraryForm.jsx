@@ -4,8 +4,11 @@ import ComboBoxField from './ComboBoxField';
 import MultiComboBoxField from './MultiComboBoxField';
 import { libraryUrl } from './api';
 
+// Fields the server works out from the file on save are not the form's to send
+const FORM_FIELDS = LIBRARY_FIELDS.filter((f) => f.form !== false);
+
 const emptyForm = () =>
-  Object.fromEntries(LIBRARY_FIELDS.map((f) => [f.name, f.type === 'multicombobox' ? [] : '']));
+  Object.fromEntries(FORM_FIELDS.map((f) => [f.name, f.type === 'multicombobox' ? [] : '']));
 
 const cleanPath = (value) => {
   let v = value.trim();
@@ -17,12 +20,32 @@ const cleanPath = (value) => {
 
 const PATH_FIELDS = new Set(['path', 'creation_log_path', 'fasta_path']);
 
+// What a creation log fills in, from either Auto-fill; anything the log does
+// not say is left as it was
+const withLogFields = (prev, body) => ({
+  ...prev,
+  creation_log_path: body.creation_log_path ?? prev.creation_log_path,
+  search_algorithm: body.search_algorithm ?? prev.search_algorithm,
+  software_version: body.software_version ?? prev.software_version,
+  date_generated: body.date_generated ?? prev.date_generated,
+  fasta_path: body.fasta_path ?? prev.fasta_path,
+  source_runs: body.source_runs && body.source_runs.length ? body.source_runs : prev.source_runs,
+  mbr: body.mbr === null || body.mbr === undefined ? prev.mbr : String(body.mbr),
+});
+
+const logRead = (body) =>
+  body.software_version
+    ? `Read the ${body.search_algorithm} ${body.software_version} log at ${body.creation_log_path}.`
+    : '';
+
 function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   const [formData, setFormData] = useState(emptyForm());
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeMessage, setAnalyzeMessage] = useState(null);
+  const [readingLog, setReadingLog] = useState(false);
+  const [logMessage, setLogMessage] = useState(null);
 
   const handleChange = (name, value) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -51,20 +74,21 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     setAnalyzing(true);
     setAnalyzeMessage(null);
     try {
+      // A creation log typed in is used as given; otherwise the server looks
+      // for one where DIA-NN or JMod leaves it
+      const creationLog = cleanPath(formData.creation_log_path || '') || null;
       const res = await fetch(libraryUrl('analyze'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path, creation_log_path: creationLog }),
       });
       const body = await res.json();
       if (!res.ok) {
         throw new Error(body.detail || 'Could not analyze file');
       }
       setFormData((prev) => ({
-        ...prev,
+        ...withLogFields(prev, body),
         tags: body.tags ?? prev.tags,
-        precursors: body.precursors ?? prev.precursors,
-        proteins: body.proteins ?? prev.proteins,
         protease: body.protease ?? prev.protease,
         carbamidomethylated:
           body.carbamidomethylated === null || body.carbamidomethylated === undefined
@@ -72,11 +96,39 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
             : String(body.carbamidomethylated),
         ptms: body.ptms && body.ptms.length ? body.ptms : prev.ptms,
       }));
-      setAnalyzeMessage(body.warning || 'Auto-filled from file. Review before saving.');
+      const fromLog = logRead(body);
+      setAnalyzeMessage((body.warning || 'Auto-filled from file. Review before saving.') + (fromLog ? ' ' + fromLog : ''));
     } catch (err) {
       setAnalyzeMessage(err.message);
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const handleLogAutoFill = async () => {
+    const path = cleanPath(formData.creation_log_path || '');
+    if (!path) {
+      setLogMessage('Enter a log path first.');
+      return;
+    }
+    setReadingLog(true);
+    setLogMessage(null);
+    try {
+      const res = await fetch(libraryUrl('analyze-log'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        throw new Error(body.detail || 'Could not read the log');
+      }
+      setFormData((prev) => withLogFields(prev, body));
+      setLogMessage(body.warning || `${logRead(body)} Review before saving.`);
+    } catch (err) {
+      setLogMessage(err.message);
+    } finally {
+      setReadingLog(false);
     }
   };
 
@@ -115,7 +167,10 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   };
 
   const renderField = (field) => (
-    <div key={field.name} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+    <div
+      key={field.name}
+      style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', gridColumn: field.wide ? '1 / -1' : undefined }}
+    >
       <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>
         {field.label}{field.required ? ' *' : ''}
       </label>
@@ -141,6 +196,17 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
         </div>
       )}
 
+      {field.name === 'creation_log_path' && (
+        <div style={{ marginTop: '0.25rem' }}>
+          <button type="button" onClick={handleLogAutoFill} disabled={readingLog}>
+            {readingLog ? 'Reading log...' : '⚡ Auto-fill from log'}
+          </button>
+          {logMessage && (
+            <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.25rem' }}>{logMessage}</p>
+          )}
+        </div>
+      )}
+
       {field.type === 'readonly' && (
         <input
           type="text"
@@ -156,6 +222,14 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
           value={formData[field.name]}
           onChange={(e) => handleChange(field.name, e.target.value)}
           rows={3}
+        />
+      )}
+
+      {field.type === 'date' && (
+        <input
+          type="date"
+          value={formData[field.name] || ''}
+          onChange={(e) => handleChange(field.name, e.target.value)}
         />
       )}
 
@@ -204,7 +278,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
       <h2>Add Library</h2>
 
       {FIELD_GROUPS.map((group) => {
-        const groupFields = LIBRARY_FIELDS.filter((f) => f.group === group);
+        const groupFields = FORM_FIELDS.filter((f) => f.group === group);
         return (
           <fieldset key={group} style={{ marginBottom: '1.25rem', border: '1px solid #ddd', borderRadius: '6px', padding: '1rem' }}>
             <legend style={{ fontWeight: 'bold', padding: '0 0.5rem' }}>{group}</legend>
