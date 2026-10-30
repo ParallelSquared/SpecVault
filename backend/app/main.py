@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .database import Base, engine
+from . import migrate
 from .routers import libraries
 
-Base.metadata.create_all(bind=engine)
+# Migrations, not create_all(): see app/migrate.py for why the difference
+# matters once the catalog holds data that cannot be rebuilt.
+migrate.run()
 
 app = FastAPI(title="SpecVault API")
 
