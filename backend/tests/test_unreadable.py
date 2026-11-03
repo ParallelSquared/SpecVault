@@ -16,10 +16,7 @@ a format SpecVault does not know yet is not the same as a file that is gone.
 """
 import pytest
 
-READABLE = (
-    "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-    "AC(UniMod:4)DEK\tACDEK\tP1\t2\n"
-)
+import libraries
 
 
 @pytest.fixture
@@ -72,7 +69,8 @@ def test_an_unparseable_file_asks_first(client, gibberish):
     assert refused.status_code == 409
     detail = refused.json()["detail"]
     assert detail["unreadable"] is True
-    assert "could not be read as a spectral library" in detail["message"]
+    # Says what is wrong with it, not just that reading went wrong
+    assert "no precursors" in detail["message"]
 
 
 def test_it_says_what_the_entry_will_not_hold(client, gibberish):
@@ -121,8 +119,7 @@ def test_it_is_recorded_like_any_other_save(client, gibberish):
 # ------------------------------------------------------- a readable file is fine
 
 def test_a_readable_library_needs_no_confirming(client, tmp_path):
-    path = tmp_path / "real.tsv"
-    path.write_text(READABLE, encoding="utf-8")
+    path = libraries.write(tmp_path / "real.tsv", "AC(UniMod:4)DEK")
     saved = save(client, str(path))
     assert saved.status_code == 201
     assert saved.json()["precursors"] == 1
@@ -131,8 +128,7 @@ def test_a_readable_library_needs_no_confirming(client, tmp_path):
 def test_confirming_a_readable_one_changes_nothing(client, tmp_path):
     """save_unreadable is an answer to a question, not a mode: it does not
     stop the file being read when the file can be read."""
-    path = tmp_path / "real.tsv"
-    path.write_text(READABLE, encoding="utf-8")
+    path = libraries.write(tmp_path / "real.tsv", "AC(UniMod:4)DEK")
     saved = save(client, str(path), save_unreadable=True)
     assert saved.json()["precursors"] == 1
     assert saved.json()["mod_details"]
@@ -141,8 +137,7 @@ def test_confirming_a_readable_one_changes_nothing(client, tmp_path):
 def test_a_file_that_goes_away_afterwards_keeps_its_entry(client, tmp_path):
     """The rule is about cataloguing, not about staying catalogued. A library
     that moves is something to notice, not something to lose."""
-    path = tmp_path / "real.tsv"
-    path.write_text(READABLE, encoding="utf-8")
+    path = libraries.write(tmp_path / "real.tsv", "AC(UniMod:4)DEK")
     saved = save(client, str(path)).json()
 
     path.unlink()

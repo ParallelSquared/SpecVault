@@ -60,6 +60,60 @@ OPTIONAL_COLUMNS = {"Precursor.Mz"}
 # at a different mass, faked the "several label channels" warning.
 DECOY_COLUMNS = ["Decoy", "decoy"]
 
+# What makes a precursor: a modified peptide at a charge. A file with neither
+# describes something else, whatever its other columns say.
+REQUIRED_PRECURSOR = ("Modified.Sequence", "Precursor.Charge")
+
+# ...and what makes a library *spectral*: for each precursor, the fragments it
+# produces. Every name library_stats knows how to read, since those are the
+# ones that would be used if the file were catalogued.
+FRAGMENT_COLUMNS = [
+    name for names in library_stats.FRAGMENT_ALIASES.values() for name in names
+]
+
+# Columns only a search report has. Not the test -- the missing fragments are
+# the test -- but they turn "this could not be read" into "this is a report",
+# which says which file to go and find instead.
+REPORT_COLUMNS = [
+    "Run", "File.Name", "Q.Value", "PG.Q.Value", "Global.Q.Value",
+    "Precursor.Quantity", "Precursor.Normalised", "Ms1.Area",
+]
+
+
+class NotALibrary(ValueError):
+    """The file was read and is not a spectral library.
+
+    Separate from a parse failure because it is a different thing to be told:
+    the file is fine, it is just not the kind of file this catalog is for.
+    """
+
+
+def _refuse_if_not_a_library(available: List[str]) -> None:
+    """Whether these columns belong to a spectral library.
+
+    A DIA-NN report is the case that matters. It describes the same
+    precursors a library does, so it carries every precursor column a library
+    carries -- and was accepted silently, with no warning and plausible
+    counts. What it does not have is fragments, because it records what was
+    found in a run rather than what to look for.
+    """
+    missing = [
+        canonical for canonical in REQUIRED_PRECURSOR
+        if not any(alias in available for alias in COLUMN_ALIASES[canonical])
+    ]
+    if missing:
+        raise NotALibrary(
+            "This file has no precursors: no " + " or ".join(missing) + " column."
+        )
+
+    if not any(name in available for name in FRAGMENT_COLUMNS):
+        raise NotALibrary(
+            "This looks like a search report, not a spectral library: it has "
+            "precursors but no fragment ions."
+            if any(name in available for name in REPORT_COLUMNS) else
+            "This file has no fragment ions, so it is not a spectral library."
+        )
+
 
 def _is_decoy(column: pl.Expr) -> pl.Expr:
     """True for decoy rows, read loosely enough for 1, 1.0, True or "true".
@@ -83,14 +137,14 @@ def _scan_library(path: str) -> pl.LazyFrame:
 def _read_library_df(path: str) -> pl.DataFrame:
     lf = _scan_library(path)
 
-    # collect_schema() reads only the header -- no data is loaded yet
+    # collect_schema() reads only the header -- no data is loaded yet, so a
+    # file that is not a library is turned away before any of it is read.
     available = lf.collect_schema().names()
+    _refuse_if_not_a_library(available)
+
     needed = []
     for aliases in COLUMN_ALIASES.values():
         needed.extend(a for a in aliases if a in available)
-
-    if not needed:
-        raise ValueError("None of the expected columns were found in this file")
 
     # A library has one row per fragment, and every column read here describes
     # the precursor, not the fragment -- so the same values repeat a dozen or
@@ -504,6 +558,10 @@ class FileAnalysis(NamedTuple):
     mod_details: list
     precursors: Optional[int]
     proteins: Optional[int]
+    # Why there is nothing above, when there is nothing above. Kept so that
+    # Save can say what Auto-fill would have said, rather than falling back on
+    # "could not be read" when the file is a report and we know it.
+    problem: Optional[str] = None
 
 
 def _analyse(df: pl.DataFrame, report: ModReport) -> FileAnalysis:
@@ -520,8 +578,10 @@ def _build_analysis(path: str) -> Optional[FileAnalysis]:
     try:
         df = _read_library_df(path)
         return _analyse(df, _mod_report(df))
+    except NotALibrary as not_one:
+        return FileAnalysis(None, None, None, problem=str(not_one))
     except Exception:
-        return None
+        return FileAnalysis(None, None, None, problem=None)
 
 
 def _analysis_for(path: str) -> Optional[FileAnalysis]:
@@ -797,18 +857,23 @@ def _refuse_without_a_hash(local: str, facts: dict, shown: str) -> None:
     ))
 
 
-def _unparsed(facts: dict, shown: str) -> Optional[schemas.UnreadableLibrary]:
-    """A file that is there and hashed, but that the parser could not read.
+def _unparsed(local: str, facts: dict, shown: str) -> Optional[schemas.UnreadableLibrary]:
+    """A file that is there and hashed, but that could not be read as a
+    library -- because it is in a format SpecVault does not know, or because
+    it is not a library at all.
 
-    Worth cataloguing even so -- it is a real file, with an identity, and a
-    format SpecVault does not know is not the same as a file that is not
-    there. What it costs is everything the library itself would have said, so
-    that is said first.
+    Still worth offering to catalogue: it is a real file with an identity, and
+    the person pointing at it may know something the parser does not. What it
+    costs is everything the library itself would have said, so that is said
+    first -- along with *why*, where the reason is known.
     """
     if facts.get("precursors") is not None:
         return None
+    # Cached from the parse that _file_facts just did, so this costs nothing
+    analysis = _analysis_for(local)
+    reason = analysis.problem if analysis else None
     return schemas.UnreadableLibrary(
-        message=f"{shown} could not be read as a spectral library.",
+        message=reason or f"{shown} could not be read as a spectral library.",
         path=shown,
         missing=[
             "precursor and protein counts",
@@ -911,6 +976,9 @@ def analyze_library(
 
     try:
         df = _read_library_df(path)
+    except NotALibrary as not_one:
+        # Says what is wrong with the file, not that reading it went wrong
+        raise HTTPException(status_code=400, detail=str(not_one))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
 
@@ -1112,7 +1180,7 @@ def create_library(
     # not is the more useful thing to say.
     _refuse_without_a_hash(local, data, shown)
     if not confirmed:
-        unparsed = _unparsed(data, shown)
+        unparsed = _unparsed(local, data, shown)
         if unparsed is not None:
             raise HTTPException(status_code=409, detail=unparsed.model_dump())
 

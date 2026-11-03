@@ -8,6 +8,8 @@ import os
 
 import pytest
 
+import libraries
+
 TOTAL_HEADER = "X-Total-Count"
 
 
@@ -207,14 +209,14 @@ def test_existing_file_reports_size_and_format(client, library_file):
 # ---------------------------------------------------------------- analyze
 
 def write_library(path):
-    path.write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-        "AC(UniMod:4)DEK\tACDEK\tP1;P2\t2\n"
-        "AC(UniMod:4)DEK\tACDEK\tP1;P2\t3\n"
-        "PEPTIDK\tPEPTIDK\tP3\t2\n",
-        encoding="utf-8",
+    """Three precursors over three proteins: one peptide at two charges, and
+    another. The counts tests assert against."""
+    return libraries.write(
+        path,
+        "AC(UniMod:4)DEK", "AC(UniMod:4)DEK", "PEPTIDK",
+        proteins=("P1;P2", "P1;P2", "P3"),
+        charges=(2, 3, 2),
     )
-    return path
 
 
 def test_analyze_fills_in_metadata_from_the_file(client, tmp_path):
@@ -229,8 +231,14 @@ def test_analyze_fills_in_metadata_from_the_file(client, tmp_path):
 
 
 def test_analyze_warns_about_missing_columns(client, tmp_path):
+    # Enough to be a library -- precursors and fragments -- but missing a
+    # column the analysis would have used. A warning, not a refusal.
     path = tmp_path / "partial.tsv"
-    path.write_text("Modified.Sequence\tPrecursor.Charge\nAK\t2\n", encoding="utf-8")
+    path.write_text(
+        "Modified.Sequence\tPrecursor.Charge\tProduct.Mz\n"
+        "AK\t2\t201.1\n",
+        encoding="utf-8",
+    )
     body = client.post("/libraries/analyze", json={"path": str(path)}).json()
     assert "Protein.Group" in body["warning"]
     assert body["proteins"] is None
@@ -304,12 +312,8 @@ def reads(monkeypatch):
 
 
 def write_mods(path, *sequences):
-    lines = ["Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge"]
-    for seq in sequences:
-        stripped = re.sub(r"\([^()]*\)", "", seq)
-        lines.append(f"{seq}\t{stripped}\tP1\t2")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    """One precursor per sequence, all on the same protein."""
+    return libraries.write(path, *sequences, proteins=["P1"] * len(sequences))
 
 
 def table_names(body):

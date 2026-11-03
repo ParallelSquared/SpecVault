@@ -323,6 +323,40 @@ way back from a wrong click: add the file again.
 can say the catalog already holds it while the form is still empty — rather
 than after it has all been filled in, which is where the news used to arrive.
 
+## What counts as a library
+
+Two things, both read from the header alone — no data is loaded to decide.
+
+**Precursors**: a `Modified.Sequence` and a `Precursor.Charge` column (or the
+Spectronaut-style spellings `ModifiedPeptide` / `PrecursorCharge`). That is
+what a precursor is; without both, the file describes something else.
+
+**Fragments**: at least one of the columns `library_stats` reads —
+`Fragment.Type`, `Fragment.Series.Number`, `Fragment.Charge`,
+`Fragment.Loss.Type`, `Product.Mz`, or their no-dot spellings. This is the
+check that matters, and the reason is `report.parquet`.
+
+A **DIA-NN report describes the same precursors a library does**, so it
+carries every precursor column a library carries. It used to be accepted with
+no warning at all and plausible-looking counts — an entry that looked right
+and was a search result. What a report has not got is fragments, because it
+records what was found in a run rather than what to look for. Where a file
+also has `Run`, `Q.Value` or `Precursor.Quantity`, the refusal says so by
+name, since knowing it is a report tells you which file to go and find.
+
+`Protein.Group` and `Stripped.Sequence` stay warnings rather than refusals —
+the second is derivable from the modified sequence, and neither decides
+whether the thing is a library.
+
+Formats are still decided by extension alone: `.tsv`, `.txt`, `.csv`,
+`.parquet`. `.speclib` is not among them, so DIA-NN's native binary libraries
+are refused — worth revisiting, and deliberately not special-cased now.
+
+Spectronaut and FragPipe libraries are **unverified** against this rule. Their
+column spellings are in `COLUMN_ALIASES` and `FRAGMENT_ALIASES` from earlier
+work, but no real file of either has been run through it. If one is refused,
+that is the first place to look.
+
 ## A file that cannot be read
 
 Two cases, with two different answers.

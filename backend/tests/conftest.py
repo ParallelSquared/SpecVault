@@ -13,6 +13,8 @@ os.environ["DATABASE_URL"] = "sqlite:///" + _TMP_DB.as_posix()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest  # noqa: E402
+
+import libraries  # noqa: E402  -- what a library looks like on disk
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import share  # noqa: E402
@@ -68,14 +70,11 @@ def library_file(tmp_path):
 
     def _write(name=None, peptide="PEPTIDK"):
         made["n"] += 1
-        path = tmp_path / (name or f"lib {made['n']:04d}.tsv")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-            f"{peptide}\t{peptide}\tP{made['n']}\t2\n",
-            encoding="utf-8",
-        )
-        return str(path)
+        return str(libraries.write(
+            tmp_path / (name or f"lib {made['n']:04d}.tsv"),
+            peptide,
+            proteins=(f"P{made['n']}",),
+        ))
 
     return _write
 

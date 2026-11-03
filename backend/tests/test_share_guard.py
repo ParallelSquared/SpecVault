@@ -8,6 +8,8 @@ reach the server, whether a given path exists and what it hashes to.
 """
 import pytest
 
+import libraries
+
 from app import share
 
 WINDOWS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -34,13 +36,7 @@ def lab(tmp_path, monkeypatch):
 
 
 def write_library(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-        "AC(UniMod:4)DEK\tACDEK\tP1;P2\t2\n",
-        encoding="utf-8",
-    )
-    return path
+    return libraries.write(path, "AC(UniMod:4)DEK", proteins=("P1;P2",))
 
 
 # ------------------------------------------------- refused before any reading

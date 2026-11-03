@@ -8,6 +8,8 @@ machine understands.
 """
 import pytest
 
+import libraries
+
 from app import share
 
 WINDOWS_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -34,14 +36,9 @@ def lab(tmp_path, monkeypatch):
 
 
 def write_library(path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-        "AC(UniMod:4)DEK\tACDEK\tP1;P2\t2\n"
-        "PEPTIDK\tPEPTIDK\tP3\t2\n",
-        encoding="utf-8",
-    )
-    return path
+    """Two precursors over three proteins."""
+    return libraries.write(path, "AC(UniMod:4)DEK", "PEPTIDK",
+                           proteins=("P1;P2", "P3"))
 
 
 def add(client, path, ua=WINDOWS_UA, **fields):
@@ -268,8 +265,7 @@ def test_adding_a_path_the_entry_already_lists_is_refused(client, lab):
 def test_a_path_belonging_to_another_library_is_refused(client, lab):
     """A path names one file, so it can only be on one entry."""
     write_library(lab / "Libraries" / "foo.tsv")
-    other = lab / "Libraries" / "other.tsv"
-    other.write_text("Modified.Sequence\tPrecursor.Charge\nAAAAK\t2\n", encoding="utf-8")
+    libraries.write(lab / "Libraries" / "other.tsv", "AAAAK")
     first = add(client, r"L:\Libraries\foo.tsv").json()["id"]
     add(client, r"L:\Libraries\other.tsv")
 
@@ -363,11 +359,7 @@ def test_a_library_with_no_paths_does_not_break_the_listing(client, lab):
     write_library(lab / "Libraries" / "foo.tsv")
     add(client, r"L:\Libraries\foo.tsv")
     # different contents, or the second add is refused as the same library
-    (lab / "Libraries" / "bar.tsv").write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-        "AAAAK\tAAAAK\tQ9\t2\n",
-        encoding="utf-8",
-    )
+    libraries.write(lab / "Libraries" / "bar.tsv", "AAAAK", proteins=("Q9",))
     broken = add(client, r"L:\Libraries\bar.tsv").json()["id"]
 
     from app.database import SessionLocal

@@ -8,17 +8,13 @@ back instead of being told the path belongs to a library it cannot see.
 """
 import pytest
 
+import libraries
+
 
 def write_library(path, peptide="PEPTIDK"):
-    """A small readable library. *peptide* varies the contents, and so the
-    hash -- two libraries with the same bytes are one library."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
-        f"{peptide}\t{peptide}\tP1\t2\n",
-        encoding="utf-8",
-    )
-    return str(path)
+    """One precursor, two fragments. *peptide* varies the contents, and so
+    the hash -- two libraries with the same bytes are one library."""
+    return str(libraries.write(path, peptide))
 
 
 @pytest.fixture

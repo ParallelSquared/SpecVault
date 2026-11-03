@@ -296,8 +296,9 @@ def test_find_missing_columns_accepts_any_alias():
 def test_read_library_df_reads_tsv_and_selects_known_columns(tmp_path):
     path = tmp_path / "library.tsv"
     path.write_text(
-        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\tIgnored\n"
-        "A(UniMod:4)K\tAK\tP1\t2\tjunk\n",
+        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge"
+        "\tProduct.Mz\tIgnored\n"
+        "A(UniMod:4)K\tAK\tP1\t2\t201.1\tjunk\n",
         encoding="utf-8",
     )
     frame = lib._read_library_df(str(path))
@@ -316,7 +317,34 @@ def test_read_library_df_rejects_unknown_extension(tmp_path):
 def test_read_library_df_rejects_file_without_expected_columns(tmp_path):
     path = tmp_path / "library.csv"
     path.write_text("alpha,beta\n1,2\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="expected columns"):
+    with pytest.raises(lib.NotALibrary, match="no precursors"):
+        lib._read_library_df(str(path))
+
+
+def test_read_library_df_rejects_a_file_with_precursors_but_no_fragments(tmp_path):
+    """A peptide list is not a spectral library: a library says, for each
+    precursor, which fragments it produces."""
+    path = tmp_path / "peptides.tsv"
+    path.write_text(
+        "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
+        "A(UniMod:4)K\tAK\tP1\t2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(lib.NotALibrary, match="no fragment ions"):
+        lib._read_library_df(str(path))
+
+
+def test_a_search_report_is_named_as_one(tmp_path):
+    """It has every precursor column a library has -- it describes the same
+    precursors -- so the message has to say which file to go and find."""
+    path = tmp_path / "report.tsv"
+    path.write_text(
+        "Run\tQ.Value\tPrecursor.Quantity"
+        "\tModified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
+        "a\t0.001\t1000\tA(UniMod:4)K\tAK\tP1\t2\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(lib.NotALibrary, match="search report"):
         lib._read_library_df(str(path))
 
 
@@ -504,10 +532,11 @@ def test_rows_come_back_in_file_order(tmp_path):
 def write_with_decoys(path, rows, column="Decoy"):
     """rows: (modified, stripped, group, charge, mz, decoy value)."""
     lines = ["Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge"
-             f"\tPrecursor.Mz\t{column}\n"]
+             f"\tPrecursor.Mz\tProduct.Mz\t{column}\n"]
     for modified_seq, stripped, group, charge, mz, decoy in rows:
         for fragment in range(3):
-            lines.append(f"{modified_seq}\t{stripped}\t{group}\t{charge}\t{mz}\t{decoy}\n")
+            lines.append(f"{modified_seq}\t{stripped}\t{group}\t{charge}\t{mz}"
+                         f"\t{200.0 + fragment}\t{decoy}\n")
     path.write_text("".join(lines), encoding="utf-8")
     return str(path)
 
