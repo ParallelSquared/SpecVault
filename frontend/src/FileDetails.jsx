@@ -48,11 +48,9 @@ function FileDetails({ lib }) {
   // paths, so Copy puts something on the clipboard that works when pasted.
   const log = lib.display_creation_log_path || lib.creation_log_path;
   const fasta = lib.display_fasta_path || lib.fasta_path;
-  // Every place the library's file is, each saying whether it is there. Older
-  // responses carried only the one path.
-  const libraryPaths = lib.path_details?.length
-    ? lib.path_details.map((d) => ({ path: d.display, missing: !d.exists }))
-    : [{ path: lib.display_path || lib.path, missing: !lib.path_exists }];
+  // Every place the library's file is, each saying whether it is there
+  const libraryPaths = (lib.path_details ?? [])
+    .map((d) => ({ path: d.display, missing: !d.exists }));
   const plain = (paths) => paths.map((path) => ({ path, missing: false }));
   const groups = [
     [libraryPaths.length > 1 ? `Library (${libraryPaths.length} copies)` : 'Library', libraryPaths],

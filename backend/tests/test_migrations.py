@@ -290,7 +290,7 @@ class TestForeignKeysEnforced:
     """
 
     FIRST = "722fc51941ab"
-    LAST = "d9e5a3fd6e68"
+    MULTI_PATH = "d9e5a3fd6e68"  # the one that created library_paths
 
     @pytest.fixture
     def engine(self, tmp_path, lab):
@@ -372,3 +372,25 @@ class TestForeignKeysEnforced:
         # the extra copy is gone -- the old shape had nowhere for it -- but
         # every library still has the path it was catalogued at
         assert self.paths(engine) == ["Libraries/one.tsv", "Libraries/two.tsv"]
+
+    def test_undoing_soft_delete_keeps_every_path(self, engine):
+        """Dropping `deleted_at` is a column drop, so it rebuilds `libraries`
+        and cascades -- the one place this migration can lose data. Unlike the
+        downgrade below it, nothing about the old shape forces a copy out, so
+        all three paths have to come back.
+        """
+        self.seed(engine)
+        self.move(engine, "head")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO library_paths (library_id, path) VALUES (1, 'Archive/one.tsv')"
+            )
+
+        self.move(engine, self.MULTI_PATH, up=False)
+        assert self.paths(engine) == [
+            "Archive/one.tsv", "Libraries/one.tsv", "Libraries/two.tsv",
+        ]
+        self.move(engine, "head")
+        assert self.paths(engine) == [
+            "Archive/one.tsv", "Libraries/one.tsv", "Libraries/two.tsv",
+        ]

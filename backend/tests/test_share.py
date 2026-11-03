@@ -173,3 +173,40 @@ class TestPosixServer:
 
     def test_a_windows_path_still_canonicalises(self):
         assert share.to_canonical(r"L:\Libraries\foo.tsv") == "Libraries/foo.tsv"
+
+
+class TestADriveLetterGetsItsSeparator:
+    r"""`L:` names a drive, not a root, so joining to it needs the separator.
+
+    "L:Libraries\foo.tsv" is a legal Windows path meaning foo.tsv under
+    whatever the current directory on L: happens to be -- a different file,
+    and usually no file at all. ntpath.join produces exactly that, and it
+    stayed hidden because the share lists a UNC path first and only the first
+    mount of a flavour is ever displayed.
+    """
+
+    @pytest.fixture
+    def drive_first(self, monkeypatch):
+        monkeypatch.setattr(share, "CONFIG", share.ShareConfig(
+            server_root="L:",
+            mounts=[share.Mount(share.WINDOWS, "L:")],
+        ))
+
+    def test_display_keeps_the_root(self, drive_first):
+        assert share.to_display("Libraries/foo.tsv", share.WINDOWS) == r"L:\Libraries\foo.tsv"
+
+    def test_the_server_opens_the_right_file(self, drive_first):
+        assert share.to_local("Libraries/foo.tsv") == r"L:\Libraries\foo.tsv"
+
+    def test_what_is_shown_can_be_pasted_back(self, drive_first):
+        shown = share.to_display("Libraries/foo.tsv", share.WINDOWS)
+        assert share.to_canonical(shown) == "Libraries/foo.tsv"
+
+    def test_a_unc_prefix_is_left_as_it_was(self, monkeypatch):
+        monkeypatch.setattr(share, "CONFIG", share.ShareConfig(
+            server_root=r"\\PTI\Lab",
+            mounts=[share.Mount(share.WINDOWS, r"\\PTI\Lab")],
+        ))
+        assert share.to_display("Libraries/foo.tsv", share.WINDOWS) == (
+            r"\\PTI\Lab\Libraries\foo.tsv"
+        )

@@ -1,14 +1,34 @@
 import { useState } from 'react';
-import { LIBRARY_FIELDS, FIELD_GROUPS } from './libraryFields';
+import { LIBRARY_FIELDS, FIELD_GROUPS, valueOf } from './libraryFields';
 import ComboBoxField from './ComboBoxField';
 import MultiComboBoxField from './MultiComboBoxField';
-import { libraryUrl } from './api';
+import { libraryUrl, changeHeaders, whoAmI } from './api';
+import { NamePicker } from './WhoAmI';
 
 // Fields the server works out from the file on save are not the form's to send
 const FORM_FIELDS = LIBRARY_FIELDS.filter((f) => f.form !== false);
 
+// Editing leaves the library's own path alone. Where a library is, and the
+// other places its file is kept, are a list -- managed under Show files, not
+// retyped here, where one box could only ever stand for the first of them.
+const EDIT_FIELDS = FORM_FIELDS.filter((f) => f.name !== 'path');
+
 const emptyForm = () =>
   Object.fromEntries(FORM_FIELDS.map((f) => [f.name, f.type === 'multicombobox' ? [] : '']));
+
+// The same shape, filled in from a library the catalog already holds. Null and
+// absent both become '' (or []), which is what the form controls expect.
+//
+// valueOf, not lib[f.name]: paths are stored share-relative, so the raw field
+// is `JMod/.../report.log.txt` -- not a path any machine can open, and one the
+// server refuses on the way back in because it matches no mount. The display_*
+// spelling is what the person pasted and what goes back.
+const formFor = (lib) =>
+  Object.fromEntries(FORM_FIELDS.map((f) => {
+    const value = valueOf(f, lib);
+    if (f.type === 'multicombobox') return [f.name, value ?? []];
+    return [f.name, value === null || value === undefined ? '' : value];
+  }));
 
 const cleanPath = (value) => {
   let v = value.trim();
@@ -19,6 +39,26 @@ const cleanPath = (value) => {
 };
 
 const PATH_FIELDS = new Set(['path', 'creation_log_path', 'fasta_path']);
+
+// Same amber as the files panel uses for a copy that is not there
+const MISSING = '#b45309';
+
+// The form as the API wants it: blanks become null, empty lists too, and paths
+// are tidied of the quotes and spaces that come with pasting from a file
+// manager. *withoutPath* where the library's own location is not the form's to
+// set -- editing an entry, or restoring one, where it is a list handled apart.
+const payloadFrom = (values, withoutPath) =>
+  Object.fromEntries(
+    Object.entries(values)
+      .filter(([name]) => !(withoutPath && name === 'path'))
+      .map(([name, value]) => {
+        if (Array.isArray(value)) return [name, value.length ? value : null];
+        const tidied = PATH_FIELDS.has(name) && typeof value === 'string'
+          ? cleanPath(value)
+          : value;
+        return [name, tidied === '' ? null : tidied];
+      }),
+  );
 
 // Three fields to a row. Six tracks rather than three so a pair of fields can
 // split a row in half (span: 3).
@@ -65,8 +105,18 @@ const logRead = (body) => {
   return body.creation_log_path ? `Found a log at ${body.creation_log_path}.` : '';
 };
 
-function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
-  const [formData, setFormData] = useState(emptyForm());
+// One form, two jobs. Given a *library* it edits that one; given none it adds
+// a new one. Kept together deliberately: they offer the same fields with the
+// same controls and the same dropdowns, and as two components they would drift
+// -- a field added to one and forgotten in the other saves on create and
+// silently vanishes on edit.
+function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
+  const editing = Boolean(library);
+  const fields = editing ? EDIT_FIELDS : FORM_FIELDS;
+  // Every place the file is, each saying whether it is there
+  const [editedPaths, setEditedPaths] = useState(() => library?.path_details ?? []);
+  const [removingPath, setRemovingPath] = useState(null);
+  const [formData, setFormData] = useState(() => (library ? formFor(library) : emptyForm()));
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -77,6 +127,15 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
   // and the path that was being added, waiting on a yes.
   const [duplicate, setDuplicate] = useState(null);
   const [addingPath, setAddingPath] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  // Auto-fill found the file already catalogued. A heads-up, not the decision:
+  // that stays at Save, where what has been typed can be offered along with it.
+  const [knownFile, setKnownFile] = useState(null);
+  // The change waiting on a name being given, so the asking can happen where
+  // the button was pressed: {what: 'save'} or {what: 'path', id}. A prompt
+  // rendered at the foot of a long form, for a Remove button at the top of
+  // it, reads as the button having done nothing at all.
+  const [needName, setNeedName] = useState(null);
 
   const handleChange = (name, value) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -128,6 +187,9 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
         ptms: body.ptms && body.ptms.length ? body.ptms : prev.ptms,
       }));
       setAnalyzeMessage(body.warning || 'Auto-filled from file. Review before saving.');
+      // The catalog already holds these bytes. Said now, while the form is
+      // still empty, rather than at Save after it has all been filled in.
+      setKnownFile(body.duplicate ?? null);
       // Analyzing the file also reads its creation log, so the log's own
       // Auto-fill has nothing left to do. Its message is shown as though the
       // button had been pressed, or the log field looks like unfinished work.
@@ -166,43 +228,115 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
+    submit();
+  };
+
+  // Split from the handler above so that answering "who are you?" can carry
+  // straight on into the save the person already asked for, rather than
+  // making them press the button twice.
+  const submit = async () => {
+    // Every change is recorded against a name, so one is asked for here --
+    // at the moment it is needed, not by sending people to the header.
+    if (!whoAmI()) {
+      setNeedName({ what: 'save' });
+      return;
+    }
+    setNeedName(null);
     setError(null);
     setSubmitting(true);
 
-    const payload = Object.fromEntries(
-      Object.entries(formData).map(([k, v]) => {
-        if (Array.isArray(v)) return [k, v.length ? v : null];
-        const value = PATH_FIELDS.has(k) && typeof v === 'string' ? cleanPath(v) : v;
-        return [k, value === '' ? null : value];
-      })
-    );
+    const payload = payloadFrom(formData, editing);
 
     try {
-      const res = await fetch(libraryUrl(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(editing ? libraryUrl(library.id) : libraryUrl(), {
+        method: editing ? 'PATCH' : 'POST',
+        headers: changeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
 
       const body = await res.json().catch(() => null);
       if (!res.ok) {
         // The file is already catalogued somewhere else. Not an error to
-        // correct — the entry it matched is offered the path instead.
-        if (res.status === 409 && body?.detail?.library_id) {
+        // correct — the entry it matched is offered the path instead. Only on
+        // create: an edit does not touch the path, so it cannot collide.
+        if (!editing && res.status === 409 && body?.detail?.library_id) {
           setDuplicate({ ...body.detail, path: payload.path });
           return;
         }
         throw new Error(describeError(body, res.status));
       }
 
-      setFormData(emptyForm());
+      if (!editing) setFormData(emptyForm());
       onLibraryAdded();
     } catch (err) {
       setError(err.message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // The way back from deleting a library by mistake: add the file again, and
+  // the entry it matched -- which kept its metadata, hash and paths -- returns
+  // rather than being retyped as a new one.
+  // *withDetails* decides whose metadata the restored entry keeps: what was
+  // just typed, or what it held when it was deleted. The path goes either
+  // way -- it says where the file is now, which is usually why the library is
+  // being added again at all.
+  const handleRestore = async (withDetails) => {
+    if (!whoAmI()) {
+      setNeedName({ what: 'restore', withDetails });
+      return;
+    }
+    setNeedName(null);
+    setRestoring(withDetails ? 'details' : 'asItWas');
+    setError(null);
+    try {
+      const res = await fetch(libraryUrl(`${duplicate.library_id}/restore`), {
+        method: 'POST',
+        headers: changeHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          path: duplicate.path,
+          details: withDetails ? payloadFrom(formData, true) : null,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body, res.status));
+      setDuplicate(null);
+      setKnownFile(null);
+      setFormData(emptyForm());
+      onLibraryAdded();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  // Stop recording one of the places the file is. Nothing on the share is
+  // touched; the entry just stops claiming a copy that is not there, or one
+  // that was pasted in by mistake.
+  const handleRemovePath = async (pathId) => {
+    if (!whoAmI()) {
+      setNeedName({ what: 'path', id: pathId });
+      return;
+    }
+    setNeedName(null);
+    setRemovingPath(pathId);
+    setError(null);
+    try {
+      const res = await fetch(libraryUrl(`${library.id}/paths/${pathId}`), {
+        method: 'DELETE',
+        headers: changeHeaders(),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(describeError(body, res.status));
+      setEditedPaths(body.path_details);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRemovingPath(null);
     }
   };
 
@@ -212,7 +346,7 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
     try {
       const res = await fetch(libraryUrl(`${duplicate.library_id}/paths`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: changeHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ path: duplicate.path }),
       });
       const body = await res.json().catch(() => null);
@@ -340,10 +474,99 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
 
   return (
     <form onSubmit={handleSubmit} style={{ marginBottom: '2rem', maxWidth: '860px' }}>
-      <h2>Add Library</h2>
+      <h2>{editing ? `Edit Library #${library.id}` : 'Add Library'}</h2>
+
+      {/* Auto-fill read the file and recognised it. At the top, where the
+          path field and the button that found it are: at the foot of the
+          form it would be a thousand pixels from anything it is about, and
+          read after the typing it exists to save. */}
+      {knownFile && !duplicate && (
+        <div style={{
+          marginBottom: '1rem', padding: '0.75rem', borderRadius: '6px',
+          border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+        }}>
+          <p style={{ margin: 0, fontSize: '0.85rem' }}>
+            <strong>SpecVault already has this file</strong> as library
+            #{knownFile.library_id}
+            {knownFile.deleted ? ', which was deleted. ' : '. '}
+            {knownFile.deleted
+              ? 'Saving will offer to restore it, with these details or its own.'
+              : knownFile.already_recorded
+                ? 'That entry already lists this path, so there is nothing to add.'
+                : 'Saving will offer to record this path on it. Its details are kept, not these.'}
+          </p>
+        </div>
+      )}
+
+      {editing && (
+        // Which library this is. The paths are not fields here -- they are a
+        // list, and one box could only ever stand for the first of them -- but
+        // leaving them out entirely meant the form opened with nothing saying
+        // what it was about.
+        <div style={{
+          marginTop: '-0.5rem', marginBottom: '1rem', padding: '0.6rem 0.75rem',
+          background: '#f6f6f6', border: '1px solid #e2e2e2', borderRadius: '6px',
+        }}>
+          <div style={{ fontSize: '0.75rem', color: '#666', fontWeight: 'bold' }}>
+            {editedPaths.length > 1 ? `Library file (${editedPaths.length} copies)` : 'Library file'}
+          </div>
+          {editedPaths.map((place) => (
+            <div key={place.display} style={{
+              display: 'flex', gap: '0.5rem', alignItems: 'baseline', marginTop: '0.2rem',
+            }}>
+              <span style={{
+                fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '0.78rem',
+                wordBreak: 'break-all', color: place.exists ? undefined : MISSING,
+              }}>
+                {place.display}
+              </span>
+              {!place.exists && (
+                <span style={{ color: MISSING, fontSize: '0.72rem', flexShrink: 0 }}>
+                  ⚠ not found
+                </span>
+              )}
+              {/* The last one stays: an entry with no paths says nothing
+                  about where its library is. Removing a path records no
+                  copy anywhere -- the file itself is never touched. */}
+              {editedPaths.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => handleRemovePath(place.id)}
+                  disabled={removingPath !== null}
+                  title="Stop recording this copy. The file is not deleted."
+                  style={{ fontSize: '0.7rem', flexShrink: 0 }}
+                >
+                  {removingPath === place.id ? 'Removing...' : 'Remove'}
+                </button>
+              )}
+            </div>
+          ))}
+          <p style={{ margin: '0.5rem 0 0', fontSize: '0.78rem', color: '#666' }}>
+            {editedPaths.length > 1
+              ? 'Removing a copy only stops SpecVault recording it; the file stays where it is.'
+              : 'Another copy is added from the Add Library page, by saving the same file again.'}
+          </p>
+          {needName?.what === 'path' && (
+            <div style={{
+              marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px',
+              border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+            }}>
+              <p style={{ margin: '0 0 0.4rem', fontSize: '0.78rem' }}>
+                Removing a copy is recorded against a name.
+              </p>
+              <NamePicker
+                autoFocus
+                options={fieldOptions.creator || []}
+                onDone={() => handleRemovePath(needName.id)}
+                onCancel={() => setNeedName(null)}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {FIELD_GROUPS.map((group) => {
-        const groupFields = FORM_FIELDS.filter((f) => f.group === group);
+        const groupFields = fields.filter((f) => f.group === group);
         // Fields of one subgroup share a row; a group without them is one grid.
         // Every row has the same tracks, so short rows line up.
         const rows = [...new Set(groupFields.map((f) => f.subgroup))]
@@ -377,39 +600,116 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions }) {
           border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
         }}>
           <p style={{ margin: 0, fontWeight: 600 }}>{duplicate.message}</p>
-          <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem' }}>
-            This exact file is already recorded as library #{duplicate.library_id}
-            {duplicate.paths?.length
-              ? `, at ${duplicate.paths.join(', ')}` : ''}.
-          </p>
-          {duplicate.already_recorded ? (
-            <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem' }}>
-              That entry already lists this path, so there is nothing to add.
-            </p>
+          {duplicate.deleted ? (
+            // Deleting keeps the entry, so this is an undo rather than a save:
+            // nothing here has to be filled in again.
+            <>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem' }}>
+                It is still here as library #{duplicate.library_id}
+                {duplicate.paths?.length ? `, at ${duplicate.paths.join(', ')}` : ''}.
+                {!duplicate.already_recorded && (
+                  <> This path is recorded on it either way.</>
+                )}
+              </p>
+              {/* Two ways, because the entry's old metadata and what has just
+                  been typed are both plausibly the right answer -- and
+                  quietly picking the old one threw away a filled-in form. */}
+              <p style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
+                Which details should it come back with?
+              </p>
+              <button type="button" onClick={() => handleRestore(true)} disabled={!!restoring}>
+                {restoring === 'details' ? 'Restoring...' : 'Restore with these details'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRestore(false)}
+                disabled={!!restoring}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                {restoring === 'asItWas' ? 'Restoring...' : 'Restore as it was'}
+              </button>
+              {needName?.what === 'restore' && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <p style={{ margin: '0 0 0.4rem', fontSize: '0.8rem' }}>
+                    Restoring is recorded against a name.
+                  </p>
+                  <NamePicker
+                    autoFocus
+                    options={fieldOptions.creator || []}
+                    onDone={() => handleRestore(needName.withDetails)}
+                    onCancel={() => setNeedName(null)}
+                  />
+                </div>
+              )}
+            </>
           ) : (
             <>
-              <p style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
-                Add <code style={{ background: 'none', padding: 0 }}>{duplicate.path}</code> to
-                it as another place the file is?
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem' }}>
+                This exact file is already recorded as library #{duplicate.library_id}
+                {duplicate.paths?.length
+                  ? `, at ${duplicate.paths.join(', ')}` : ''}.
               </p>
-              <button type="button" onClick={handleAddPathToExisting} disabled={addingPath}>
-                {addingPath ? 'Adding path...' : 'Add path to entry'}
-              </button>
+              {duplicate.already_recorded ? (
+                <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem' }}>
+                  That entry already lists this path, so there is nothing to add.
+                </p>
+              ) : (
+                <>
+                  <p style={{ margin: '0.5rem 0', fontSize: '0.85rem' }}>
+                    Add <code style={{ background: 'none', padding: 0 }}>{duplicate.path}</code> to
+                    it as another place the file is? The entry keeps its own
+                    details — anything filled in here is not saved. Edit it
+                    from its row if they need changing.
+                  </p>
+                  <button type="button" onClick={handleAddPathToExisting} disabled={addingPath}>
+                    {addingPath ? 'Adding path...' : 'Add path to entry'}
+                  </button>
+                </>
+              )}
             </>
           )}
           <button
             type="button"
             onClick={() => setDuplicate(null)}
-            style={{ marginLeft: duplicate.already_recorded ? 0 : '0.5rem', marginTop: '0.5rem' }}
+            style={{
+              marginLeft: !duplicate.deleted && duplicate.already_recorded ? 0 : '0.5rem',
+              marginTop: '0.5rem',
+            }}
           >
             Cancel
           </button>
         </div>
       )}
 
+      {needName?.what === 'save' && (
+        <div style={{
+          marginBottom: '0.75rem', padding: '0.75rem', borderRadius: '6px',
+          border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+        }}>
+          <p style={{ margin: '0 0 0.5rem', fontSize: '0.85rem' }}>
+            {editing ? 'This edit' : 'Adding a library'} is recorded against a
+            name, so the catalog can say who to ask about it later.
+          </p>
+          <NamePicker
+            autoFocus
+            options={fieldOptions.creator || []}
+            onDone={submit}
+            onCancel={() => setNeedName(null)}
+          />
+        </div>
+      )}
+
       <button type="submit" disabled={submitting || !!duplicate}>
-        {submitting ? 'Adding...' : 'Add Library'}
+        {submitting
+          ? (editing ? 'Saving...' : 'Adding...')
+          : (editing ? 'Save changes' : 'Add Library')}
       </button>
+      {editing && (
+        <button type="button" onClick={onCancel} disabled={submitting}
+                style={{ marginLeft: '0.5rem' }}>
+          Cancel
+        </button>
+      )}
       {error && <p style={{ color: 'red' }}>Error: {error}</p>}
     </form>
   );

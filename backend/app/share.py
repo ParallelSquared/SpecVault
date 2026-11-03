@@ -132,13 +132,28 @@ def to_canonical(path: str) -> Optional[str]:
     return None
 
 
+def _windows_join(prefix: str, canonical: str) -> str:
+    """A canonical path hung off a Windows prefix.
+
+    ntpath.join alone is wrong for a bare drive letter: "L:" is drive-
+    *relative* in Windows, so ntpath.join("L:", r"Libraries\\foo.tsv") gives
+    "L:Libraries\\foo.tsv" -- which means foo.tsv under whatever the current
+    directory on L: happens to be, not "L:\\Libraries\\foo.tsv". The
+    separator has to be spelled out. A UNC prefix needs no such help.
+    """
+    tail = canonical.replace("/", "\\")
+    if prefix.endswith(":"):
+        return f"{prefix}\\{tail}"
+    return ntpath.join(prefix, tail)
+
+
 def to_local(canonical: str) -> str:
     """The path this server opens to read a canonical path's file."""
     if not configured():
         return canonical
     root = CONFIG.server_root
     if _WINDOWS_PATH.match(root):
-        return ntpath.join(root, canonical.replace("/", "\\"))
+        return _windows_join(root, canonical)
     return posixpath.join(root, canonical)
 
 
@@ -157,7 +172,7 @@ def to_display(canonical: str, flavour: str = WINDOWS) -> str:
     if mount is None:
         return to_local(canonical)
     if mount.os == WINDOWS:
-        return ntpath.join(mount.prefix, canonical.replace("/", "\\"))
+        return _windows_join(mount.prefix, canonical)
     return posixpath.join(mount.prefix, canonical)
 
 

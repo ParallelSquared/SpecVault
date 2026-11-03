@@ -177,6 +177,8 @@ Library metadata fields are declared in one place per tier:
    `LibraryUpdate`. `LibraryUpdate` is a flat class rather than a subclass, so
    that PATCH can tell "not sent" from "set to nothing" — which means a field
    added only to `LibraryBase` saves on create and is quietly dropped on edit.
+   Adding it to `LibraryUpdate` is also what puts it in the history, since
+   `VERSIONED_FIELDS` is read off that class.
 3. `frontend/src/libraryFields.js` — one registry entry, which drives the add
    form, the table column, and the filter control together
 4. `backend/app/routers/libraries.py` — for a `combobox` or `multicombobox`,
@@ -216,6 +218,131 @@ entry, enforced by a unique constraint across every path in the catalog.
 A library counts as found when **any** of its paths has the file, so one copy
 being offline does not make it missing; the files panel marks which copies are
 not there.
+
+## Editing a library
+
+The `⋯` menu on each row edits it. The edit form is the Add form — the same
+one component, given a library instead of nothing — so the two can never offer
+different fields or different dropdowns.
+
+Two things are deliberately not editable there:
+
+- **What the file says.** Precursor and protein counts, the hash, the mod
+  table and the library stats are read from the file, not typed. Letting them
+  be edited would mean the catalog could no longer tell a measured number from
+  a typed one. The registry already marks them, with `form: false`.
+- **Where the library is.** Paths are a list rather than a field, so the form
+  shows them as one — every place the file is, each marked present or not,
+  with **Remove** beside each. Removing one only stops SpecVault recording
+  that copy; the file is not touched. The last path cannot go: an entry with
+  none says nothing about where its library is, and is the shape that broke
+  the listing once already.
+
+  Removal is **not** restricted to copies whose file is missing. A path
+  pasted by mistake may well point at something real, and that is exactly the
+  one worth being able to take back — the history records what went either
+  way.
+
+Paths come back from the API in two spellings and only one of them is valid
+input: `creation_log_path` is stored share-relative (`Libraries/report.log.txt`)
+while `display_creation_log_path` is the same file written for the machine
+that asked. **Send back the display one.** The stored spelling matches no
+mount, so it is refused as being off the share — which is baffling, since it
+is the path the catalog just handed over. `valueOf()` in `libraryFields.js` is
+what picks the right one.
+
+Protease, carbamidomethylation and PTMs *are* editable even though they are
+detected, because detection is a guess and wants correcting.
+
+## Who changed something
+
+There are no accounts. The page header asks once who you are, keeps it in that
+browser, and sends it with every request that changes a library
+(`X-SpecVault-User`). The dropdown offers the creators already in the catalog,
+which is what stops one person becoming `ZC`, `zc` and `Zach`.
+
+**Changing a library that already exists is refused without one** — editing,
+deleting, restoring, adding or removing a path, in the API as well as the UI.
+An edit destroys the value it replaces, and that value survives only in the
+history, which is worth little if half of it says "someone".
+
+**Cataloguing a new library is the exception.** Nothing is being overwritten,
+and `creator` already names a person, so a bulk import is not locked out of
+the one job it has. Those rows record no name and the column stays nullable,
+which is also what rows written before any of this need.
+
+The UI asks where the change is being made rather than sending people to the
+header, and carries straight on into the change once answered.
+
+This is **self-reported and must not be read as a login**: anyone can type any
+name, and nothing is kept out by it. It answers "who should I ask about this
+entry", which is the question people actually have. It is also per browser, so
+on a shared machine the second person inherits the first one's name — which is
+why it sits in the header where a wrong name is obvious and one click to fix.
+
+If accounts are ever added, the column is already there and already populated;
+the name just stops being self-reported.
+
+## History
+
+Every change is recorded in `library_versions`: one row per event
+(catalogued, edited, deleted, restored, path added, path removed, file
+changed) holding a snapshot of the typed fields and who said they did it. **Show history** on a
+row compares neighbouring snapshots and shows what changed.
+
+Snapshots rather than a list of changes: reverting is then a single PATCH from
+a stored row, and a diff is cheap to compute from two of them. Only the typed
+fields are kept — everything read from the file is a property of the bytes,
+which cannot change unless the entry is pointed at a different file, and that
+is recorded as its own kind of event.
+
+A PATCH that changes nothing records nothing; a history full of empty saves is
+one nobody reads. The fields covered are read off `LibraryUpdate`, so a new
+field is versioned without anyone having to remember this file.
+
+Lists say what came and went (`Tags: + reprocessed`) instead of repeating
+themselves (`demo → demo, reprocessed`), which matters most for paths, where
+the whole list twice is unreadable.
+
+## Deleting a library
+
+The `⋯` menu on each row deletes it, behind a confirmation. Deleting is a
+catalog operation: **nothing on the share is touched**, because SpecVault only
+ever reads library files.
+
+It is also reversible. The row stays, marked with the day it went, and stops
+being listed — so it is gone from the table, the total, `GET /libraries/{id}`
+and the dropdown options, but keeps its metadata, its hash and its paths.
+
+Keeping the paths is what makes it recoverable without a "deleted libraries"
+screen. They stay subject to the unique constraint, so adding the same file
+again matches the deleted entry rather than starting a second one. That is the
+way back from a wrong click: add the file again.
+
+**Auto-fill says so, not Save.** It has just read and hashed the file, so it
+can say the catalog already holds it while the form is still empty — rather
+than after it has all been filled in, which is where the news used to arrive.
+
+Saving then offers two ways back, because the entry's old metadata and what
+has just been typed are both plausibly right:
+
+| | |
+|---|---|
+| **Restore with these details** | the form replaces what the entry held — for somebody who deleted it *because* it was catalogued wrongly |
+| **Restore as it was** | the entry comes back untouched |
+
+**The path is recorded either way.** It says where the file is now rather than
+what the entry should claim, and a library is usually being added again
+because something about it moved — restoring it pointing only at somewhere
+the file has left would be no use. If the old path is now stale, remove it
+from the edit form.
+
+`POST /libraries/{id}/restore` does the same thing directly, for an entry whose
+file has since moved or gone.
+
+A deleted entry's history stays readable at `/libraries/{id}/history`, which
+is where "who took this out, and when" is answered — the entry itself is a 404
+by then.
 
 Three things follow from storing paths share-relative:
 

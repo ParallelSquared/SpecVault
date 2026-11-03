@@ -334,15 +334,25 @@ def test_a_library_is_missing_only_when_no_copy_is_there(client, lab):
     assert [d["exists"] for d in body["path_details"]] == [False, False]
 
 
-def test_deleting_a_library_takes_its_paths_with_it(client, lab):
+def test_a_deleted_library_keeps_its_paths(client, lab):
+    """Deleting is reversible, so the entry keeps everything that identifies
+    it -- which means its paths stay taken, and re-adding one finds the entry
+    it belongs to instead of quietly making a second."""
     write_library(lab / "Libraries" / "foo.tsv")
     write_library(lab / "Archive" / "foo-copy.tsv")
     library_id = add(client, r"L:\Libraries\foo.tsv").json()["id"]
     client.post(f"/libraries/{library_id}/paths", json={"path": r"L:\Archive\foo-copy.tsv"})
 
     assert client.delete(f"/libraries/{library_id}").status_code == 204
-    # the path is free again, so the library can be re-added at it
-    assert add(client, r"L:\Archive\foo-copy.tsv").status_code == 201
+
+    refused = add(client, r"L:\Archive\foo-copy.tsv")
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert detail["library_id"] == library_id
+    assert detail["deleted"] is True
+    # Both of its paths come back, written for the asking machine, so the
+    # offer to restore can show where the library is
+    assert detail["paths"] == [r"\\PTI\Lab\Libraries\foo.tsv", r"\\PTI\Lab\Archive\foo-copy.tsv"]
 
 
 def test_a_library_with_no_paths_does_not_break_the_listing(client, lab):
@@ -373,3 +383,60 @@ def test_a_library_with_no_paths_does_not_break_the_listing(client, lab):
     assert damaged["path"] is None
     assert damaged["paths"] == []
     assert damaged["path_exists"] is False
+
+
+# ------------------------------------------- what comes out goes back in
+
+class TestEditingSendsBackWhatItWasShown:
+    """A library's paths come back in two spellings and only one of them is
+    valid input.
+
+    `creation_log_path` is stored share-relative -- `JMod/.../report.log.txt`
+    -- and `display_creation_log_path` is the same file written for the
+    machine that asked. Sending the stored one back matches no mount, so it is
+    refused as being off the share, which is both wrong and baffling: it is
+    the path the catalog just handed over.
+
+    The edit form filled itself from the stored field and hit exactly this.
+    """
+
+    @pytest.fixture
+    def catalogued(self, client, lab):
+        write_library(lab / "Libraries" / "foo.tsv")
+        (lab / "Libraries" / "report.log.txt").write_text("log", encoding="utf-8")
+        response = add(client, r"L:\Libraries\foo.tsv",
+                       creation_log_path=r"L:\Libraries\report.log.txt")
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def test_the_stored_spelling_is_not_a_path_anyone_can_open(self, catalogued):
+        assert catalogued["creation_log_path"] == "Libraries/report.log.txt"
+        assert catalogued["display_creation_log_path"] == r"\\PTI\Lab\Libraries\report.log.txt"
+
+    def test_the_display_spelling_saves(self, client, catalogued):
+        edited = client.patch(f"/libraries/{catalogued['id']}", json={
+            "creation_log_path": catalogued["display_creation_log_path"],
+        })
+        assert edited.status_code == 200
+        assert edited.json()["creation_log_path"] == "Libraries/report.log.txt"
+
+    def test_the_stored_spelling_is_refused(self, client, catalogued):
+        """Documenting the sharp edge rather than smoothing it: a relative path
+        matches no mount, so it cannot be told from a half-typed one."""
+        edited = client.patch(f"/libraries/{catalogued['id']}", json={
+            "creation_log_path": catalogued["creation_log_path"],
+        })
+        assert edited.status_code == 400
+        assert "not on the lab share" in edited.json()["detail"]
+
+    def test_an_edit_that_resends_every_path_it_was_given_works(self, client, catalogued):
+        """What the form does: read a library, hand back the display spelling
+        of every path field, change something else."""
+        edited = client.patch(f"/libraries/{catalogued['id']}", json={
+            "creation_log_path": catalogued["display_creation_log_path"],
+            "fasta_path": catalogued["display_fasta_path"],
+            "project": "Astral",
+        })
+        assert edited.status_code == 200
+        assert edited.json()["project"] == "Astral"
+        assert edited.json()["creation_log_path"] == "Libraries/report.log.txt"

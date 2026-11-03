@@ -4,6 +4,9 @@ import FilterBar from './FilterBar';
 import ModDetails from './ModDetails';
 import LibraryDetails from './LibraryDetails';
 import FileDetails from './FileDetails';
+import LibraryMenu from './LibraryMenu';
+import HistoryDetails from './HistoryDetails';
+import WhoAmI from './WhoAmI';
 import { PRIMARY_FIELDS, GRID_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS, valueOf } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
 import { libraryUrl } from './api';
@@ -42,6 +45,10 @@ function App() {
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState(defaultFilters());
   const [expandedId, setExpandedId] = useState(null);
+  const [menuId, setMenuId] = useState(null);
+  // The library the edit form is showing, or null. Held rather than looked up
+  // by id so the form keeps what it was given while the listing refreshes.
+  const [editing, setEditing] = useState(null);
   const [totalCount, setTotalCount] = useState(0);
 
   // Walk every page before rendering. A bare GET /libraries/ returned only the
@@ -86,6 +93,28 @@ function App() {
     setView('browse');
   };
 
+  const handleLibraryEdited = () => {
+    setEditing(null);
+    fetchLibraries();
+    fetchFieldOptions();
+    setView('browse');
+  };
+
+  const handleEditRequested = (lib) => {
+    setMenuId(null);
+    setEditing(lib);
+    setView('edit');
+  };
+
+  const handleLibraryDeleted = () => {
+    setMenuId(null);
+    setExpandedId(null);
+    // The options too: a creator or project only the deleted library used
+    // should stop being offered in the filters and the Add form.
+    fetchLibraries();
+    fetchFieldOptions();
+  };
+
   const fileFormatOptions = useMemo(() => {
     const formats = libraries.map((lib) => lib.file_format).filter(Boolean);
     return [...new Set(formats)].sort();
@@ -120,17 +149,37 @@ function App() {
         <img src="/logo-full.svg" alt="SpecVault" style={{ height: '96px', width: 'auto', display: 'block' }} />
       </h1>
 
-      <nav style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.5rem' }}>
+      <nav style={{
+        marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', alignItems: 'center',
+      }}>
         <button onClick={() => setView('browse')} style={{ fontWeight: view === 'browse' ? 'bold' : 'normal' }}>
           Browse Libraries
         </button>
         <button onClick={() => setView('add')} style={{ fontWeight: view === 'add' ? 'bold' : 'normal' }}>
           Add Library
         </button>
+        {/* Out here rather than inside the forms: it applies to everything
+            that changes a library, and on a shared machine it being visible
+            is what makes a wrong name obvious. */}
+        <div style={{ marginLeft: 'auto' }}>
+          <WhoAmI options={fieldOptions.creator || []} />
+        </div>
       </nav>
 
       {view === 'add' && (
         <AddLibraryForm onLibraryAdded={handleLibraryAdded} fieldOptions={fieldOptions} />
+      )}
+
+      {view === 'edit' && editing && (
+        <AddLibraryForm
+          key={editing.id}
+          library={editing}
+          onLibraryAdded={handleLibraryEdited}
+          // Refetched even on Cancel: removing a path takes effect at once
+          // rather than waiting for Save, so the listing may be out of date.
+          onCancel={() => { setEditing(null); fetchLibraries(); setView('browse'); }}
+          fieldOptions={fieldOptions}
+        />
       )}
 
       {view === 'browse' && (
@@ -164,6 +213,7 @@ function App() {
                     {field.label}
                   </th>
                 ))}
+                <th style={{ width: '2.5rem' }}></th>
               </tr>
             </thead>
             <tbody>
@@ -192,10 +242,21 @@ function App() {
                         {renderCellValue(field, lib)}
                       </td>
                     ))}
+                    <td style={{ padding: '0.5rem', textAlign: 'center' }}>
+                      <LibraryMenu
+                        lib={lib}
+                        creators={fieldOptions.creator || []}
+                        open={menuId === lib.id}
+                        onToggle={setMenuId}
+                        onEdit={() => handleEditRequested(lib)}
+                        onDeleted={handleLibraryDeleted}
+                        onError={setError}
+                      />
+                    </td>
                   </tr>
                   {expandedId === lib.id && (
                     <tr>
-                      <td colSpan={PRIMARY_FIELDS.length + 1} style={{ background: '#fafafa', padding: '1rem' }}>
+                      <td colSpan={PRIMARY_FIELDS.length + 2} style={{ background: '#fafafa', padding: '1rem' }}>
                         <div style={{
                           display: 'grid',
                           gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
@@ -215,6 +276,7 @@ function App() {
                         <FileDetails lib={lib} />
                         <ModDetails details={lib.mod_details} />
                         <LibraryDetails stats={lib.library_stats} />
+                        <HistoryDetails lib={lib} />
                       </td>
                     </tr>
                   )}

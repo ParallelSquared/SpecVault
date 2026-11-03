@@ -26,6 +26,7 @@ class ModDetail(BaseModel):
 
 class LibraryPathInfo(BaseModel):
     """One of a library's paths, as somebody looking at it needs it."""
+    id: int         # names this one path, so it can be removed
     path: str       # share-relative, the stored form
     display: str    # written the way the asking machine writes paths
     exists: bool    # whether the file is actually there right now
@@ -141,6 +142,22 @@ class AddPathRequest(BaseModel):
     path: str
 
 
+class LibraryVersion(BaseModel):
+    """One thing that happened to a library.
+
+    *data* is a snapshot of the typed fields as they stood afterwards, so two
+    neighbouring rows compared give what changed. *changed_by* is whatever the
+    browser said; there are no accounts, so it is null for anything done
+    before someone gave a name, or by hand.
+    """
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    recorded_at: datetime
+    event: str
+    changed_by: Optional[str] = None
+    data: dict
+
+
 class DuplicateLibrary(BaseModel):
     """What a save is told when the file is already catalogued.
 
@@ -151,6 +168,9 @@ class DuplicateLibrary(BaseModel):
     library_id: int
     paths: List[str] = []        # as the asking machine writes them
     already_recorded: bool = False  # this exact path is one of them
+    # The entry it matched was deleted. The offer is to restore it rather than
+    # to add a path, and the message above already says when it went.
+    deleted: bool = False
 
 # New schemas for the analyze endpoint
 class AnalyzeRequest(BaseModel):
@@ -182,6 +202,26 @@ class AnalyzeResponse(LogResponse):
     ptms: List[str] = []
     tags: List[str] = []
     mod_details: List[ModDetail] = []
+    # Set when the catalog already holds this file. Not an error -- Auto-fill
+    # has read the file and can say so now, rather than letting a whole form
+    # be filled in for a save that cannot go through.
+    duplicate: Optional[DuplicateLibrary] = None
+
+
+class RestoreRequest(BaseModel):
+    """What a restore should put back, beyond the entry itself.
+
+    *details* replaces the metadata, for somebody who deleted a library
+    because it was catalogued wrongly and has just filled the form in again.
+    Left out, the entry comes back exactly as it was.
+
+    *path* is where the file is now, and is recorded either way: that is a
+    fact about the file rather than a judgement about the entry, and an entry
+    restored pointing only at somewhere the file has left is no use to
+    anybody.
+    """
+    details: Optional[LibraryUpdate] = None
+    path: Optional[str] = None
 
 class HashLookupRequest(BaseModel):
     path: str

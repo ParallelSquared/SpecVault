@@ -43,10 +43,15 @@ def pytest_sessionstart(session):
 
 @pytest.fixture
 def client():
-    """A client over an empty database; tables are rebuilt for each test."""
+    """A client over an empty database; tables are rebuilt for each test.
+
+    It gives a name by default, because a browser always does: changing a
+    library is refused without one. A test about that refusal sends
+    `headers={"X-SpecVault-User": ""}` to take it away again.
+    """
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"X-SpecVault-User": "tester"}) as test_client:
         yield test_client
 
 

@@ -4,7 +4,7 @@ import re
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, NamedTuple, Optional, Tuple
 
 import polars as pl
@@ -628,37 +628,167 @@ def _viewer_os(user_agent: Optional[str]) -> str:
 PATH_FIELDS = ("path", "creation_log_path", "fasta_path")
 
 
-def _refuse_if_catalogued(db: Session, content_hash: Optional[str], path: str, flavour: str) -> None:
-    """Stop a save whose file the catalog already holds.
+# Everything a person types about a library, which is everything worth keeping
+# a history of. Read off LibraryUpdate rather than listed again, so a field
+# added there is versioned without anyone remembering to come here. `path` is
+# left out: where the library is lives in `paths` below, as a list.
+VERSIONED_FIELDS = tuple(
+    name for name in schemas.LibraryUpdate.model_fields if name != "path"
+)
+
+# What a history row says happened. The snapshot is the same shape either way;
+# this is what lets the timeline read as sentences rather than as diffs.
+EVENTS = (
+    "catalogued", "edited", "deleted", "restored",
+    "path added", "path removed", "file changed",
+)
+
+# A name is whatever the browser claimed, so it is trimmed and capped rather
+# than trusted. Nobody is kept out by it -- it only has to be readable.
+MAX_NAME = 60
+
+
+def _who(changed_by: Optional[str]) -> Optional[str]:
+    """Who the browser says is doing this, or None if it did not say."""
+    cleaned = (changed_by or "").strip()[:MAX_NAME]
+    return cleaned or None
+
+
+def _require_who(changed_by: Optional[str]) -> str:
+    """The same, for a change that will not go ahead without one.
+
+    Changing an entry that already exists alters or removes somebody else's
+    work, and the old values survive only in the history -- which is worth
+    little if half of it says "someone". Cataloguing a new library is the
+    exception: nothing is being overwritten, and `creator` already names a
+    person.
+
+    Not a login, and not pretending to be: it refuses a request that says
+    nothing, not one that says something untrue.
+    """
+    who = _who(changed_by)
+    if who is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This change is recorded against a name. Send an "
+                "X-SpecVault-User header saying who you are."
+            ),
+        )
+    return who
+
+
+def _jsonable(value):
+    """Dates do not survive JSON on their own."""
+    return value.isoformat() if isinstance(value, (date, datetime)) else value
+
+
+def _snapshot(library: models.Library) -> dict:
+    data = {field: _jsonable(getattr(library, field)) for field in VERSIONED_FIELDS}
+    data["paths"] = [row.path for row in library.paths]
+    return data
+
+
+def _displayed_snapshot(data: dict, flavour: str) -> dict:
+    """A snapshot with its paths written for the machine asking.
+
+    `source_runs` is left alone: those are raw run paths, never canonicalised
+    on the way in, so there is nothing to translate back.
+    """
+    shown = dict(data)
+    if isinstance(shown.get("paths"), list):
+        shown["paths"] = [share.to_display(p, flavour) for p in shown["paths"]]
+    for field in ("creation_log_path", "fasta_path"):
+        if shown.get(field):
+            shown[field] = _display(shown[field], flavour)
+    return shown
+
+
+def _record(db: Session, library: models.Library, event: str, changed_by: Optional[str]) -> None:
+    """Note what the library looks like now, and who left it that way.
+
+    Called after the change has been applied to *library* and before the
+    commit, so the snapshot and the row it describes land together or not at
+    all.
+    """
+    db.add(models.LibraryVersion(
+        library_id=library.id,
+        event=event,
+        changed_by=_who(changed_by),
+        data=_snapshot(library),
+    ))
+
+
+def _live(db: Session):
+    """The catalog: every library that has not been deleted.
+
+    Deleting only sets `deleted_at`, so every query that answers "what is in
+    SpecVault" starts here. The two that deliberately do not are the duplicate
+    checks below -- a deleted entry still owns its hash and its paths, and
+    saying so is what lets it be offered back.
+    """
+    return db.query(models.Library).filter(models.Library.deleted_at.is_(None))
+
+
+def _deleted_on(library: models.Library) -> Optional[str]:
+    """The day an entry was deleted, for saying so to a person."""
+    return library.deleted_at.strftime("%d %b %Y") if library.deleted_at else None
+
+
+def _catalogued_as(
+    db: Session, content_hash: Optional[str], path: str, flavour: str,
+) -> Optional[schemas.DuplicateLibrary]:
+    """The entry that already holds this file's bytes, if there is one.
 
     The hash is stored so that "do we already have this?" has an answer; two
-    entries for one file is the question going unasked. The refusal carries the
-    entry it matched, so the caller can offer to add this path to it instead --
+    entries for one file is the question going unasked. What comes back names
+    the entry it matched, so the caller can offer to add this path to it --
     a library copied to a second folder is one library in two places.
+
+    A deleted entry matches too, and is the more useful answer: somebody who
+    deletes a library and adds the file again means to undo it. Saying nothing
+    would leave them pointed at an entry they cannot see.
     """
     if not content_hash:
-        return  # unreadable file: no hash is not the same as a matching one
-    existing = (
+        return None  # unreadable file: no hash is not the same as a matching one
+    matches = (
         db.query(models.Library)
         .filter(models.Library.content_hash == content_hash)
         .order_by(models.Library.id)
-        .first()
+        .all()
     )
-    if existing is None:
-        return
-    raise HTTPException(status_code=409, detail=schemas.DuplicateLibrary(
-        message="Library already exists in SpecVault.",
+    if not matches:
+        return None
+    # A live entry is what the file belongs to; a deleted one only matters when
+    # there is no live one.
+    existing = next((row for row in matches if row.deleted_at is None), matches[0])
+    deleted_on = _deleted_on(existing)
+    return schemas.DuplicateLibrary(
+        message=(
+            f"This library was deleted from SpecVault on {deleted_on}."
+            if deleted_on else "Library already exists in SpecVault."
+        ),
         library_id=existing.id,
         paths=[share.to_display(row.path, flavour) for row in existing.paths],
         already_recorded=any(row.path == path for row in existing.paths),
-    ).model_dump())
+        deleted=deleted_on is not None,
+    )
+
+
+def _refuse_if_catalogued(db: Session, content_hash: Optional[str], path: str, flavour: str) -> None:
+    """The same question, asked where the answer stops a save going through."""
+    found = _catalogued_as(db, content_hash, path, flavour)
+    if found is not None:
+        raise HTTPException(status_code=409, detail=found.model_dump())
 
 
 def _refuse_if_path_taken(db: Session, path: str, flavour: str) -> None:
     """A path names one file, so it belongs to one entry.
 
     The unique constraint says the same thing, but an IntegrityError cannot say
-    *which* library already has it, and that is the useful half.
+    *which* library already has it, and that is the useful half. A deleted
+    entry keeps its paths, so it is named here as well -- otherwise the refusal
+    points at a library the catalog will not show.
     """
     owner = (
         db.query(models.Library)
@@ -667,9 +797,13 @@ def _refuse_if_path_taken(db: Session, path: str, flavour: str) -> None:
         .first()
     )
     if owner is not None:
+        deleted_on = _deleted_on(owner)
         raise HTTPException(
             status_code=409,
             detail=(
+                f"{share.to_display(path, flavour)} is recorded as library "
+                f"#{owner.id}, which was deleted on {deleted_on}."
+                if deleted_on else
                 f"{share.to_display(path, flavour)} is already recorded as library "
                 f"#{owner.id}."
             ),
@@ -718,6 +852,7 @@ def _store_or_keep(path: str) -> str:
 def analyze_library(
     payload: schemas.AnalyzeRequest,
     user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
 ):
     # Pasted from whichever machine the person is on, so translated to this
     # server's view of the share before anything is opened -- and refused here
@@ -759,6 +894,14 @@ def analyze_library(
         notes.append(log_note)
     log = _log_for_viewer(log, _viewer_os(user_agent))
 
+    # Collected here rather than left for Save. The hash has had the whole
+    # parse above to finish in, and knowing now that the file is already
+    # catalogued saves filling in a form whose Save cannot go through.
+    duplicate = _catalogued_as(
+        db, _result(_start_hash(path)), _store_path(payload.path, "path"),
+        _viewer_os(user_agent),
+    )
+
     return schemas.AnalyzeResponse(
         precursors=analysis.precursors,
         proteins=analysis.proteins,
@@ -769,6 +912,7 @@ def analyze_library(
         mod_details=[schemas.ModDetail(**detail) for detail in report.details],
         **log,
         warning=" ".join(notes) if notes else None,
+        duplicate=duplicate,
     )
 
 
@@ -827,9 +971,12 @@ def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.L
     present = {p: os.path.exists(local[p]) for p in stored}
     data.path_details = [
         schemas.LibraryPathInfo(
-            path=p, display=_display(p, flavour) or p, exists=present[p]
+            id=row.id,
+            path=row.path,
+            display=_display(row.path, flavour) or row.path,
+            exists=present[row.path],
         )
-        for p in stored
+        for row in lib.paths
     ]
 
     # Found wherever it is: a library kept in two places is still reachable
@@ -876,16 +1023,20 @@ def get_field_options(db: Session = Depends(get_db)):
         "in_silico",
     ]
     options = {}
+    # Deleted entries are left out: these fill the dropdowns, and offering a
+    # creator or a project that only a deleted library ever used spreads it
+    # back through the catalog.
+    live = models.Library.deleted_at.is_(None)
     for field in simple_fields:
         col = getattr(models.Library, field)
-        rows = db.query(col).filter(col.isnot(None), col != "").distinct().all()
+        rows = db.query(col).filter(col.isnot(None), col != "", live).distinct().all()
         options[field] = sorted({r[0] for r in rows if r[0]})
 
     # List-type fields store JSON arrays — flatten distinct values across all rows
     list_fields = ["cell_types", "tissues", "ptms", "tags"]
     for field in list_fields:
         col = getattr(models.Library, field)
-        rows = db.query(col).filter(col.isnot(None)).all()
+        rows = db.query(col).filter(col.isnot(None), live).all()
         values = set()
         for (row_list,) in rows:
             if row_list:
@@ -899,6 +1050,7 @@ def get_field_options(db: Session = Depends(get_db)):
 def create_library(
     library: schemas.LibraryCreate,
     user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
     db: Session = Depends(get_db),
 ):
     data = library.model_dump()
@@ -914,6 +1066,10 @@ def create_library(
     db_library = models.Library(**data, paths=[models.LibraryPath(path=path)])
     db.add(db_library)
     try:
+        # flush first: the history row needs the library's id, which the
+        # database only hands out when the insert actually goes.
+        db.flush()
+        _record(db, db_library, "catalogued", changed_by)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -927,6 +1083,7 @@ def add_path(
     library_id: int,
     payload: schemas.AddPathRequest,
     user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
     db: Session = Depends(get_db),
 ):
     """Record another place this library's file is.
@@ -935,7 +1092,8 @@ def add_path(
     so instead of a second entry for the same bytes, the entry it matched
     learns about this copy too.
     """
-    library = db.query(models.Library).filter(models.Library.id == library_id).first()
+    changed_by = _require_who(changed_by)
+    library = _live(db).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
 
@@ -952,6 +1110,7 @@ def add_path(
 
     library.paths.append(models.LibraryPath(path=path))
     try:
+        _record(db, library, "path added", changed_by)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -959,16 +1118,68 @@ def add_path(
     db.refresh(library)
     return _to_response(library, flavour)
 
+
+@router.delete("/{library_id}/paths/{path_id}", response_model=schemas.LibraryResponse)
+def remove_path(
+    library_id: int,
+    path_id: int,
+    user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    db: Session = Depends(get_db),
+):
+    """Stop recording one of the places this library's file is.
+
+    For a copy that has been moved or deleted: the entry goes on claiming it
+    is there, and the files panel marks it missing forever with no way to say
+    "that one is gone". Nothing on the share is touched -- the path is only
+    ever a record of where a file was.
+
+    **Not** restricted to paths whose file is missing. A path pasted by
+    mistake may well point at something real -- another library's file, even
+    -- and that is exactly the one worth being able to take back. What the
+    history is for: the snapshot either side says what was removed.
+
+    The last path cannot go. An entry with none says nothing about where its
+    library is, and is the shape that broke the listing once already.
+    """
+    changed_by = _require_who(changed_by)
+    library = _live(db).filter(models.Library.id == library_id).first()
+    if not library:
+        raise HTTPException(status_code=404, detail="Library not found")
+
+    doomed = next((row for row in library.paths if row.id == path_id), None)
+    if doomed is None:
+        raise HTTPException(status_code=404, detail="This library has no such path")
+    if len(library.paths) == 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This is the only place this library is recorded. Add another "
+                "path first, or delete the library."
+            ),
+        )
+
+    flavour = _viewer_os(user_agent)
+    library.paths.remove(doomed)
+    _record(db, library, "path removed", changed_by)
+    db.commit()
+    db.refresh(library)
+    return _to_response(library, flavour)
+
+
 @router.patch("/{library_id}", response_model=schemas.LibraryResponse)
 def update_library(
     library_id: int,
     updates: schemas.LibraryUpdate,
     user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
     db: Session = Depends(get_db),
 ):
-    library = db.query(models.Library).filter(models.Library.id == library_id).first()
+    changed_by = _require_who(changed_by)
+    library = _live(db).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
+    before = _snapshot(library)
     update_data = updates.model_dump(exclude_unset=True)
     for field in PATH_FIELDS:
         if field in update_data:
@@ -982,6 +1193,7 @@ def update_library(
     for field, value in update_data.items():
         setattr(library, field, value)
 
+    changed_file = False
     if new_path is not None and new_path != library.path:
         _refuse_if_path_taken(db, new_path, _viewer_os(user_agent))
         if library.paths:
@@ -989,8 +1201,18 @@ def update_library(
         else:
             library.paths.append(models.LibraryPath(path=new_path))
         # a different file: its hash, table and counts are its own
-        for field, value in _file_facts(share.resolve(new_path)).items():
+        facts = _file_facts(share.resolve(new_path))
+        # Worth telling apart in the history: correcting a path is housekeeping,
+        # while the entry now describing different bytes means every count and
+        # every reading of it below that point was about another file.
+        changed_file = facts.get("content_hash") != library.content_hash
+        for field, value in facts.items():
             setattr(library, field, value)
+
+    # A PATCH that sets everything to what it already was is not a change, and
+    # a history full of empty edits is a history nobody reads.
+    if changed_file or _snapshot(library) != before:
+        _record(db, library, "file changed" if changed_file else "edited", changed_by)
     try:
         db.commit()
     except IntegrityError:
@@ -1010,11 +1232,15 @@ def list_libraries(
     # X-Total-Count lets the client tell a complete result from a truncated page.
     # Without it a client that asked for one page rendered it as the whole
     # catalog. Exposed to the browser via expose_headers in main.py.
-    total = db.query(func.count(models.Library.id)).scalar()
+    total = (
+        db.query(func.count(models.Library.id))
+        .filter(models.Library.deleted_at.is_(None))
+        .scalar()
+    )
     response.headers["X-Total-Count"] = str(total)
 
     rows = (
-        db.query(models.Library)
+        _live(db)
         .order_by(models.Library.id)  # stable order, or paging repeats/skips rows
         .offset(skip)
         .limit(limit)
@@ -1029,15 +1255,130 @@ def get_library(
     user_agent: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    library = db.query(models.Library).filter(models.Library.id == library_id).first()
+    library = _live(db).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
     return _to_response(library, _viewer_os(user_agent))
 
 @router.delete("/{library_id}", status_code=204)
-def delete_library(library_id: int, db: Session = Depends(get_db)):
+def delete_library(
+    library_id: int,
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    db: Session = Depends(get_db),
+):
+    """Take a library out of the catalog, reversibly.
+
+    The row stays and stops being listed. Nothing on the share is touched --
+    SpecVault only ever reads library files -- and nothing is lost: the entry
+    keeps its metadata, its hash and its paths, so adding the file again finds
+    it and offers it back rather than starting a second entry.
+
+    Deleting an already-deleted library is a 404: it is not in the catalog to
+    delete. The date it went is the date it first went.
+    """
+    changed_by = _require_who(changed_by)
+    library = _live(db).filter(models.Library.id == library_id).first()
+    if not library:
+        raise HTTPException(status_code=404, detail="Library not found")
+    library.deleted_at = func.now()
+    _record(db, library, "deleted", changed_by)
+    db.commit()
+
+
+@router.post("/{library_id}/restore", response_model=schemas.LibraryResponse)
+def restore_library(
+    library_id: int,
+    payload: Optional[schemas.RestoreRequest] = None,
+    user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    db: Session = Depends(get_db),
+):
+    """Put a deleted library back in the catalog.
+
+    With a body, it also takes what the person had just typed: somebody who
+    deletes a library and adds the file again has usually filled the form in
+    first, and throwing that away to bring back the metadata they were
+    replacing is the wrong way round. Without one, the entry returns as it
+    was.
+
+    The path comes back either way, because it says where the file is rather
+    than what the entry should claim -- the file has often moved, which is why
+    it is being added again at all.
+
+    Deliberately not filtered to deleted ones: restoring a library that is
+    already there is what the caller wanted either way, and it means a second
+    click cannot turn into an error.
+    """
+    changed_by = _require_who(changed_by)
     library = db.query(models.Library).filter(models.Library.id == library_id).first()
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
-    db.delete(library)
+
+    flavour = _viewer_os(user_agent)
+    was_deleted = library.deleted_at is not None
+    library.deleted_at = None
+
+    before = _snapshot(library)
+    if payload is not None and payload.details is not None:
+        updates = payload.details.model_dump(exclude_unset=True)
+        # Where the library is comes from `path` below, as a list; one field
+        # could only ever stand for the first of them.
+        updates.pop("path", None)
+        for field in PATH_FIELDS:
+            if field in updates:
+                updates[field] = _store_path(updates[field], field)
+        for field, value in updates.items():
+            setattr(library, field, value)
+
+    if payload is not None and payload.path:
+        path = _store_path(payload.path, "path")
+        if path and path not in (row.path for row in library.paths):
+            _refuse_if_path_taken(db, path, flavour)
+            library.paths.append(models.LibraryPath(path=path))
+
+    if was_deleted or _snapshot(library) != before:
+        _record(db, library, "restored" if was_deleted else "edited", changed_by)
     db.commit()
+    db.refresh(library)
+    return _to_response(library, flavour)
+
+
+@router.get("/{library_id}/history", response_model=List[schemas.LibraryVersion])
+def get_library_history(
+    library_id: int,
+    user_agent: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Everything that has happened to this library, newest first.
+
+    Deliberately readable for a deleted library: "when did this go, and who
+    took it out" is a question worth being able to answer about an entry that
+    is no longer listed.
+
+    What changed between two snapshots is worked out by the caller, which
+    knows what each field is called and how to show it. Paths are the one
+    thing done here: they are stored share-relative, and a history reading
+    "JMod/.../lib.parquet" shows a path nobody can open rather than the one
+    they would have pasted.
+    """
+    if not db.query(models.Library.id).filter(models.Library.id == library_id).first():
+        raise HTTPException(status_code=404, detail="Library not found")
+    rows = (
+        db.query(models.LibraryVersion)
+        .filter(models.LibraryVersion.library_id == library_id)
+        .order_by(models.LibraryVersion.id.desc())
+        .all()
+    )
+    flavour = _viewer_os(user_agent)
+    return [
+        schemas.LibraryVersion(
+            id=row.id,
+            recorded_at=row.recorded_at,
+            event=row.event,
+            changed_by=row.changed_by,
+            # A copy: the stored snapshot keeps the canonical spelling, which
+            # is what makes it comparable across machines.
+            data=_displayed_snapshot(row.data, flavour),
+        )
+        for row in rows
+    ]
