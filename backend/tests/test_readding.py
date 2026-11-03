@@ -6,6 +6,8 @@ reading and hashing the library -- before the news arrived. And restoring the
 entry it matched threw that form away without saying so, bringing back the
 metadata the person had quite possibly just deleted the library to replace.
 """
+import os
+
 import pytest
 
 import libraries
@@ -194,3 +196,73 @@ class TestWhereTheFileIsNow:
         assert refused.status_code == 409
         # and nothing happened: not restored, not moved
         assert client.get(f"/libraries/{library['id']}").status_code == 404
+
+
+# ----------------------------------------- the file is read again on restore
+
+class TestRestoringReadsTheFileAgain:
+    """What the file says is worked out from the file, not brought back.
+
+    The counts, mod table and library details are stored when a library is
+    catalogued. Restoring used to return exactly what was stored -- so a
+    library first catalogued before an improvement to the reading (the
+    N-terminal labels FragPipe writes behind an underscore were the case)
+    came back without it, however many times it was deleted and re-added.
+    """
+
+    @pytest.fixture
+    def stale(self, client, tmp_path):
+        """A deleted library whose stored reading is out of date, the way one
+        catalogued by an older SpecVault would be."""
+        path = str(libraries.write(tmp_path / "lib.tsv", "AC(UniMod:4)DEK", "PEPTIDK"))
+        created = client.post("/libraries/", headers=AS_ADA,
+                              json={"path": path, "creator": "Ada"}).json()
+
+        from app import models
+        from app.database import SessionLocal
+        with SessionLocal() as session:
+            row = session.get(models.Library, created["id"])
+            row.mod_details, row.precursors, row.proteins, row.library_stats = [], 999, 999, None
+            session.commit()
+
+        client.delete(f"/libraries/{created['id']}", headers=AS_ADA)
+        return created["id"], path
+
+    def restore(self, client, library_id, **body):
+        response = client.post(f"/libraries/{library_id}/restore", headers=AS_ADA, json=body)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def test_restoring_with_details_reads_it_again(self, client, stale):
+        library_id, path = stale
+        back = self.restore(client, library_id, path=path, details={"project": "Astral"})
+        assert (back["precursors"], back["proteins"]) == (2, 2)
+        assert {m["name"] for m in back["mod_details"]} == {"UniMod:4"}
+        assert back["library_stats"]
+
+    def test_restoring_as_it_was_reads_it_again_too(self, client, stale):
+        """"As it was" is about what people typed. The reading of the file is
+        nobody's judgement, so there is no old version of it worth keeping."""
+        library_id, path = stale
+        back = self.restore(client, library_id, path=path)
+        assert back["precursors"] == 2
+        assert back["mod_details"]
+
+    def test_with_no_path_given_its_own_paths_are_read(self, client, stale):
+        library_id, _ = stale
+        assert self.restore(client, library_id)["precursors"] == 2
+
+    def test_a_file_that_is_gone_keeps_the_old_reading(self, client, stale):
+        """An unreachable file is no reason to throw away a reading that may
+        well be right -- better stale than empty."""
+        library_id, path = stale
+        os.remove(path)
+        assert self.restore(client, library_id)["precursors"] == 999
+
+    def test_only_a_file_with_the_same_bytes_is_read(self, client, stale, tmp_path):
+        """A restore says where the library is; a path to some other file is
+        not this library's to describe. Its own copy is read instead."""
+        library_id, _ = stale
+        other = str(libraries.write(tmp_path / "other.tsv", "ELVISLIVESK", "ANDK", "MORK"))
+        back = self.restore(client, library_id, path=other)
+        assert back["precursors"] == 2

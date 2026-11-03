@@ -411,6 +411,12 @@ has just been typed are both plausibly right:
 | **Restore with these details** | the form replaces what the entry held — for somebody who deleted it *because* it was catalogued wrongly |
 | **Restore as it was** | the entry comes back untouched |
 
+**The file is read again either way.** Counts, the mod table and the library
+details are worked out from the file rather than brought back, so a library
+catalogued before an improvement to the reading picks it up on restore. Only
+a file with the same bytes is read, and if none can be reached the stored
+reading is kept rather than emptied.
+
 **The path is recorded either way.** It says where the file is now rather than
 what the entry should claim, and a library is usually being added again
 because something about it moved — restoring it pointing only at somewhere

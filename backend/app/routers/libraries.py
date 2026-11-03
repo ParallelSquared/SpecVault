@@ -630,6 +630,37 @@ def _file_facts(path: str) -> dict:
     }
 
 
+# What a library's file says about it, as opposed to what people typed.
+READ_FROM_FILE = ("mod_details", "precursors", "proteins", "library_stats")
+
+
+def _read_again(library: models.Library, given: Optional[str] = None) -> None:
+    """Work out what the file says again, for an entry coming back.
+
+    The counts, mod table and library details are read from the file when a
+    library is catalogued and stored with it. Restoring used to bring back
+    exactly what was stored -- so a library catalogued before an improvement
+    to the reading (the N-terminal labels behind FragPipe's underscores) came
+    back without it, however many times it was deleted and added again.
+
+    The path just given is tried first, then the entry's own. Only a file
+    with the same bytes counts: a path to some other file is not this
+    library's to describe. And a file that cannot be read changes nothing --
+    an unreachable share is no reason to throw away a reading that was good.
+    """
+    for stored in ([given] if given else []) + [row.path for row in library.paths]:
+        local = share.resolve(stored)
+        if not os.path.exists(local):
+            continue
+        facts = _file_facts(local)
+        if facts["content_hash"] != library.content_hash or facts["precursors"] is None:
+            continue
+        for field in READ_FROM_FILE:
+            if facts[field] is not None:
+                setattr(library, field, facts[field])
+        return
+
+
 def _clean_path(value: str) -> str:
     """A pasted path without the whitespace and quotes Windows' "Copy as path" adds."""
     path = value.strip()
@@ -1473,11 +1504,14 @@ def restore_library(
         for field, value in updates.items():
             setattr(library, field, value)
 
+    given = None
     if payload is not None and payload.path:
-        path = _store_path(payload.path, "path")
-        if path and path not in (row.path for row in library.paths):
-            _refuse_if_path_taken(db, path, flavour)
-            library.paths.append(models.LibraryPath(path=path))
+        given = _store_path(payload.path, "path")
+        if given and given not in (row.path for row in library.paths):
+            _refuse_if_path_taken(db, given, flavour)
+            library.paths.append(models.LibraryPath(path=given))
+
+    _read_again(library, given)
 
     if was_deleted or _snapshot(library) != before:
         _record(db, library, "restored" if was_deleted else "edited", changed_by)
