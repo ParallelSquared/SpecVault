@@ -131,6 +131,10 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
   // Auto-fill found the file already catalogued. A heads-up, not the decision:
   // that stays at Save, where what has been typed can be offered along with it.
   const [knownFile, setKnownFile] = useState(null);
+  // The file is there but would not parse as a library, so the save is
+  // waiting on a yes. Held rather than acted on, because what it costs --
+  // counts, modifications, library details -- is worth reading first.
+  const [unreadable, setUnreadable] = useState(null);
   // The change waiting on a name being given, so the asking can happen where
   // the button was pressed: {what: 'save'} or {what: 'path', id}. A prompt
   // rendered at the foot of a long form, for a Remove button at the top of
@@ -236,18 +240,21 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
   // Split from the handler above so that answering "who are you?" can carry
   // straight on into the save the person already asked for, rather than
   // making them press the button twice.
-  const submit = async () => {
+  const submit = async ({ saveUnreadable = false } = {}) => {
     // Every change is recorded against a name, so one is asked for here --
     // at the moment it is needed, not by sending people to the header.
     if (!whoAmI()) {
-      setNeedName({ what: 'save' });
+      setNeedName({ what: 'save', saveUnreadable });
       return;
     }
     setNeedName(null);
+    // About to find out again; the refusal re-sets it if it still applies.
+    setUnreadable(null);
     setError(null);
     setSubmitting(true);
 
     const payload = payloadFrom(formData, editing);
+    if (saveUnreadable) payload.save_unreadable = true;
 
     try {
       const res = await fetch(editing ? libraryUrl(library.id) : libraryUrl(), {
@@ -263,6 +270,13 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
         // create: an edit does not touch the path, so it cannot collide.
         if (!editing && res.status === 409 && body?.detail?.library_id) {
           setDuplicate({ ...body.detail, path: payload.path });
+          return;
+        }
+        // The file is there but would not parse. Not corrected but confirmed:
+        // a real library in a format SpecVault does not know is still worth
+        // cataloguing, so long as what that costs has been said.
+        if (!editing && res.status === 409 && body?.detail?.unreadable) {
+          setUnreadable(body.detail);
           return;
         }
         throw new Error(describeError(body, res.status));
@@ -693,9 +707,37 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
           <NamePicker
             autoFocus
             options={fieldOptions.creator || []}
-            onDone={submit}
+            onDone={() => submit({ saveUnreadable: needName.saveUnreadable })}
             onCancel={() => setNeedName(null)}
           />
+        </div>
+      )}
+
+      {/* By the Save button, which is what was just pressed. */}
+      {unreadable && (
+        <div style={{
+          marginBottom: '0.75rem', padding: '0.75rem', borderRadius: '6px',
+          border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+        }}>
+          <p style={{ margin: 0, fontWeight: 600 }}>{unreadable.message}</p>
+          <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem' }}>
+            It is a real file and SpecVault has hashed it, so the entry can
+            still be recognised later. What it will not hold:
+          </p>
+          <ul style={{ margin: '0.25rem 0 0.5rem', paddingLeft: '1.2rem', fontSize: '0.85rem' }}>
+            {unreadable.missing.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+          <p style={{ margin: '0 0 0.5rem', fontSize: '0.85rem' }}>
+            Save this library anyway?
+          </p>
+          <button type="button" onClick={() => submit({ saveUnreadable: true })}
+                  disabled={submitting}>
+            {submitting ? 'Saving...' : 'Yes, save it'}
+          </button>
+          <button type="button" onClick={() => setUnreadable(null)} disabled={submitting}
+                  style={{ marginLeft: '0.5rem' }}>
+            Cancel
+          </button>
         </div>
       )}
 

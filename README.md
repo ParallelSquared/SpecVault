@@ -323,6 +323,28 @@ way back from a wrong click: add the file again.
 can say the catalog already holds it while the form is still empty — rather
 than after it has all been filled in, which is where the news used to arrive.
 
+## A file that cannot be read
+
+Two cases, with two different answers.
+
+**No file at that path is refused outright**, with no way to confirm past it.
+The hash is a library's identity — how the same file is recognised somewhere
+else, how a duplicate is matched, how a deleted entry is offered back, and
+what a check that a library has not been altered compares against. Nothing
+re-reads a file once it is catalogued, so an entry saved without a hash can
+never acquire one: a row that looks like a library and is not one.
+
+**A file that will not parse is a question, not a refusal.** It has been read
+— it is really there and it has a hash, so the entry can still be recognised
+later. What it costs is everything the library itself would have said, so the
+save names that and asks. A format SpecVault does not know yet is not the same
+as a file that is gone, and `save_unreadable: true` is the answer.
+
+Once catalogued, a library whose file later moves or goes keeps its entry and
+everything read from it. The rule is about cataloguing, not about staying
+catalogued — a library that moves is something to notice, not something to
+lose.
+
 Saving then offers two ways back, because the entry's old metadata and what
 has just been typed are both plausibly right:
 

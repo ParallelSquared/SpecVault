@@ -56,10 +56,42 @@ def client():
 
 
 @pytest.fixture
-def make_library(client):
-    """Insert a library and return its response body."""
-    def _make(path, creator="tester", **fields):
-        response = client.post("/libraries/", json={"path": path, "creator": creator, **fields})
+def library_file(tmp_path):
+    """A small readable library on disk.
+
+    Saving needs one: a path with no file behind it is refused, because
+    without a hash the entry could never be recognised again. Each file gets
+    different contents, or they would be the same library and the second save
+    would be refused as a duplicate.
+    """
+    made = {"n": 0}
+
+    def _write(name=None, peptide="PEPTIDK"):
+        made["n"] += 1
+        path = tmp_path / (name or f"lib {made['n']:04d}.tsv")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "Modified.Sequence\tStripped.Sequence\tProtein.Group\tPrecursor.Charge\n"
+            f"{peptide}\t{peptide}\tP{made['n']}\t2\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    return _write
+
+
+@pytest.fixture
+def make_library(client, library_file):
+    """Insert a library and return its response body.
+
+    With no path it writes a file to put behind one, which is what most tests
+    want: they are about paging, options or editing, not about where the
+    library lives.
+    """
+    def _make(path=None, creator="tester", **fields):
+        response = client.post("/libraries/", json={
+            "path": path or library_file(), "creator": creator, **fields,
+        })
         assert response.status_code == 201, response.text
         return response.json()
 

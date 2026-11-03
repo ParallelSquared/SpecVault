@@ -775,6 +775,49 @@ def _catalogued_as(
     )
 
 
+def _refuse_without_a_hash(local: str, facts: dict, shown: str) -> None:
+    """No hash, no entry. Not a thing to confirm past.
+
+    The hash is the library's identity: it is how the same file is recognised
+    when it turns up again somewhere else, how a duplicate is matched, how a
+    deleted entry is offered back, and what a check that a library has not
+    been altered compares against. An entry without one can do none of that
+    and never will -- nothing re-reads a file once it is catalogued -- so it
+    is a row that looks like a library and is not one.
+    """
+    if facts.get("content_hash") is not None:
+        return
+    missing_file = not os.path.exists(local)
+    raise HTTPException(status_code=400, detail=(
+        (f"There is no file at {shown}." if missing_file
+         else f"{shown} could not be read.")
+        + " A library has to be readable to be catalogued: its hash is how"
+          " SpecVault recognises the file again, and an entry without one"
+          " cannot be matched, checked, or told apart from any other."
+    ))
+
+
+def _unparsed(facts: dict, shown: str) -> Optional[schemas.UnreadableLibrary]:
+    """A file that is there and hashed, but that the parser could not read.
+
+    Worth cataloguing even so -- it is a real file, with an identity, and a
+    format SpecVault does not know is not the same as a file that is not
+    there. What it costs is everything the library itself would have said, so
+    that is said first.
+    """
+    if facts.get("precursors") is not None:
+        return None
+    return schemas.UnreadableLibrary(
+        message=f"{shown} could not be read as a spectral library.",
+        path=shown,
+        missing=[
+            "precursor and protein counts",
+            "the modification table",
+            "the library details: charges, fragments, digest",
+        ],
+    )
+
+
 def _refuse_if_catalogued(db: Session, content_hash: Optional[str], path: str, flavour: str) -> None:
     """The same question, asked where the answer stops a save going through."""
     found = _catalogued_as(db, content_hash, path, flavour)
@@ -1054,12 +1097,25 @@ def create_library(
     db: Session = Depends(get_db),
 ):
     data = library.model_dump()
+    confirmed = data.pop("save_unreadable", False)
     for field in PATH_FIELDS:
         data[field] = _store_path(data.get(field), field)
     path = data.pop("path")
-    data.update(_file_facts(share.resolve(path)))
+    local = share.resolve(path)
+    data.update(_file_facts(local))
 
     flavour = _viewer_os(user_agent)
+    shown = share.to_display(path, flavour)
+
+    # Both before the duplicate checks: with no hash there is nothing to match
+    # on, so "do we already have this?" cannot be answered either way, and why
+    # not is the more useful thing to say.
+    _refuse_without_a_hash(local, data, shown)
+    if not confirmed:
+        unparsed = _unparsed(data, shown)
+        if unparsed is not None:
+            raise HTTPException(status_code=409, detail=unparsed.model_dump())
+
     _refuse_if_catalogued(db, data.get("content_hash"), path, flavour)
     _refuse_if_path_taken(db, path, flavour)
 

@@ -4,6 +4,7 @@ Each test runs against a temporary SQLite database (see conftest.py), never the
 developer's real catalog.
 """
 import hashlib
+import os
 
 import pytest
 
@@ -11,7 +12,7 @@ TOTAL_HEADER = "X-Total-Count"
 
 
 def seed(make_library, count, start=0):
-    return [make_library(f"D:/libs/lib {i:04d}.tsv") for i in range(start, start + count)]
+    return [make_library() for _ in range(start, start + count)]
 
 
 # ---------------------------------------------------------------- paging
@@ -110,28 +111,31 @@ def test_cors_when_configured_exposes_the_total_header(monkeypatch):
 
 # ---------------------------------------------------------------- CRUD
 
-def test_create_returns_the_stored_library(client):
-    response = client.post("/libraries/", json={"path": "D:/libs/a.tsv", "creator": "ZC"})
+def test_create_returns_the_stored_library(client, library_file):
+    path = library_file()
+    response = client.post("/libraries/", json={"path": path, "creator": "ZC"})
     assert response.status_code == 201
     body = response.json()
-    assert body["path"] == "D:/libs/a.tsv"
+    assert body["path"] == path
     assert body["creator"] == "ZC"
     assert body["id"] > 0
 
 
-def test_duplicate_path_is_a_conflict(client, make_library):
-    make_library("D:/libs/same.tsv")
-    response = client.post("/libraries/", json={"path": "D:/libs/same.tsv", "creator": "ZC"})
+def test_duplicate_path_is_a_conflict(client, make_library, library_file):
+    path = library_file()
+    make_library(path)
+    response = client.post("/libraries/", json={"path": path, "creator": "ZC"})
     assert response.status_code == 409
 
 
-def test_get_by_id_round_trips(client, make_library):
-    created = make_library("D:/libs/one.tsv")
-    assert client.get(f"/libraries/{created['id']}").json()["path"] == "D:/libs/one.tsv"
+def test_get_by_id_round_trips(client, make_library, library_file):
+    path = library_file()
+    created = make_library(path)
+    assert client.get(f"/libraries/{created['id']}").json()["path"] == path
 
 
 def test_patch_updates_only_supplied_fields(client, make_library):
-    created = make_library("D:/libs/one.tsv", creator="ZC", species="human")
+    created = make_library(creator="ZC", species="human")
     response = client.patch(f"/libraries/{created['id']}", json={"species": "mouse"})
     assert response.status_code == 200
     body = response.json()
@@ -140,7 +144,7 @@ def test_patch_updates_only_supplied_fields(client, make_library):
 
 
 def test_delete_removes_the_library(client, make_library):
-    created = make_library("D:/libs/gone.tsv")
+    created = make_library()
     assert client.delete(f"/libraries/{created['id']}").status_code == 204
     assert client.get(f"/libraries/{created['id']}").status_code == 404
 
@@ -152,15 +156,15 @@ def test_unknown_id_is_not_found(client, method):
 
 def test_options_route_is_not_parsed_as_an_id(client, make_library):
     """/options must stay declared above /{library_id} or it 422s as an int."""
-    make_library("D:/libs/a.tsv", creator="ZC", species="human")
+    make_library(creator="ZC", species="human")
     response = client.get("/libraries/options")
     assert response.status_code == 200
     assert response.json()["creator"] == ["ZC"]
 
 
 def test_options_flattens_list_valued_fields(client, make_library):
-    make_library("D:/libs/a.tsv", tags=["SILAC"], tissues=["liver", "lung"])
-    make_library("D:/libs/b.tsv", tags=["LF"], tissues=["liver"])
+    make_library(tags=["SILAC"], tissues=["liver", "lung"])
+    make_library(tags=["LF"], tissues=["liver"])
     options = client.get("/libraries/options").json()
     assert options["tags"] == ["LF", "SILAC"]
     assert options["tissues"] == ["liver", "lung"]
@@ -168,29 +172,36 @@ def test_options_flattens_list_valued_fields(client, make_library):
 
 # ---------------------------------------------------------------- paths
 
-def test_path_with_spaces_is_stored_verbatim(client):
-    path = "D:/Shared Drive/My Libs/lib one.tsv"
+def test_path_with_spaces_is_stored_verbatim(client, library_file):
+    path = library_file("My Libs/lib one.tsv")
     assert client.post("/libraries/", json={"path": path, "creator": "ZC"}).json()["path"] == path
 
 
 @pytest.mark.parametrize("wrapper", ['"', "'"])
-def test_surrounding_quotes_are_stripped_but_inner_spaces_kept(client, wrapper):
-    raw = f"  {wrapper}D:/Shared Drive/lib.tsv{wrapper}  "
-    response = client.post("/libraries/", json={"path": raw, "creator": "ZC"})
-    assert response.json()["path"] == "D:/Shared Drive/lib.tsv"
+def test_surrounding_quotes_are_stripped_but_inner_spaces_kept(client, library_file, wrapper):
+    path = library_file("Shared Drive/lib.tsv")
+    response = client.post("/libraries/",
+                           json={"path": f"  {wrapper}{path}{wrapper}  ", "creator": "ZC"})
+    assert response.json()["path"] == path
 
 
-def test_missing_file_is_reported_as_not_found(client, make_library):
-    assert make_library("D:/libs/definitely-absent.tsv")["path_exists"] is False
+def test_a_file_that_goes_away_is_reported_as_not_found(client, make_library, library_file):
+    """Catalogued while it was there, gone since. The entry stays -- that is
+    the thing to notice and fix -- and says the file is not where it says."""
+    path = library_file()
+    created = make_library(path)
+    assert created["path_exists"] is True
+
+    os.remove(path)
+    assert client.get(f"/libraries/{created['id']}").json()["path_exists"] is False
 
 
-def test_existing_file_reports_size_and_format(client, tmp_path):
-    real = tmp_path / "real library.tsv"
-    real.write_text("Modified.Sequence\nAK\n", encoding="utf-8")
-    body = client.post("/libraries/", json={"path": str(real), "creator": "ZC"}).json()
+def test_existing_file_reports_size_and_format(client, library_file):
+    real = library_file("real library.tsv")
+    body = client.post("/libraries/", json={"path": real, "creator": "ZC"}).json()
     assert body["path_exists"] is True
     assert body["file_format"] == "TSV"
-    assert body["file_size"] == real.stat().st_size
+    assert body["file_size"] == os.path.getsize(real)
 
 
 # ---------------------------------------------------------------- analyze
@@ -345,10 +356,6 @@ def test_a_table_sent_with_the_request_is_ignored(client, tmp_path):
     assert table_names(body) == {"UniMod:4"}
 
 
-def test_an_unreachable_path_still_saves_without_a_table(client):
-    response = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"})
-    assert response.status_code == 201
-    assert response.json()["mod_details"] is None
 
 
 def test_changing_the_path_rebuilds_the_table(client, tmp_path):
@@ -400,9 +407,6 @@ def test_changing_the_path_recounts(client, tmp_path):
     assert (body["precursors"], body["proteins"]) == (1, 1)
 
 
-def test_an_unreachable_path_saves_without_counts(client):
-    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
-    assert (body["precursors"], body["proteins"]) == (None, None)
 
 
 def test_the_table_cannot_be_set_by_patch(client, tmp_path):
@@ -469,9 +473,6 @@ def test_changing_the_path_rehashes(client, tmp_path):
     assert body["content_hash"] == sha256_of(second)
 
 
-def test_an_unreachable_path_saves_without_a_hash(client):
-    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
-    assert body["content_hash"] is None
 
 
 # ---------------------------------------------------------------- library details
@@ -531,9 +532,6 @@ def test_changing_the_path_rebuilds_the_details(client, tmp_path):
     assert body["ion_mobility"] is False
 
 
-def test_an_unreachable_path_saves_without_details(client):
-    body = client.post("/libraries/", json={"path": "D:/libs/not-mounted.tsv", "creator": "ZC"}).json()
-    assert body["library_stats"] is None and body["ion_mobility"] is None
 
 
 # ---------------------------------------------------------------- the creation log
@@ -607,14 +605,14 @@ def test_the_log_fields_are_saved(client, tmp_path):
 
 
 def test_vendors_are_saved_and_offered_as_options(client, make_library):
-    assert make_library("D:/libs/a.tsv", vendor="Thermo")["vendor"] == "Thermo"
-    make_library("D:/libs/b.tsv", vendor="Bruker")
+    assert make_library(vendor="Thermo")["vendor"] == "Thermo"
+    make_library(vendor="Bruker")
     assert client.get("/libraries/options").json()["vendor"] == ["Bruker", "Thermo"]
 
 
 def test_software_versions_are_offered_as_options(client, make_library):
-    make_library("D:/libs/a.tsv", software_version="2.5.0")
-    make_library("D:/libs/b.tsv", software_version="1.9.2")
+    make_library(software_version="2.5.0")
+    make_library(software_version="1.9.2")
     assert client.get("/libraries/options").json()["software_version"] == ["1.9.2", "2.5.0"]
 
 

@@ -68,7 +68,10 @@ class LibraryBase(BaseModel):
         return v
 
 class LibraryCreate(LibraryBase):
-    pass
+    # Save a library whose file could not be read, having been told what that
+    # costs. Defaults to false so the refusal has to be answered rather than
+    # worked around by accident; see UnreadableLibrary.
+    save_unreadable: bool = False
 
 class LibraryUpdate(BaseModel):
     path: Optional[str] = None
@@ -206,6 +209,25 @@ class AnalyzeResponse(LogResponse):
     # has read the file and can say so now, rather than letting a whole form
     # be filled in for a save that cannot go through.
     duplicate: Optional[DuplicateLibrary] = None
+
+
+class UnreadableLibrary(BaseModel):
+    """What a save is told when the file is there but will not parse.
+
+    Not an error: a real file in a format SpecVault does not know is still
+    worth cataloguing, and it has a hash, so the entry can still be
+    recognised later. What it costs is everything the library itself would
+    have said -- and saying so before the save rather than after is the
+    difference between a decision and a surprise.
+
+    A file that is *not* there is refused outright instead, with no way to
+    confirm past it: no file means no hash, and no hash means an entry
+    nothing can ever match.
+    """
+    unreadable: bool = True   # tells this apart from the duplicate 409
+    message: str
+    path: str                 # as the asking machine writes it
+    missing: List[str] = []   # what the entry will not hold, in words
 
 
 class RestoreRequest(BaseModel):

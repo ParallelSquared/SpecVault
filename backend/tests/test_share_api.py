@@ -124,9 +124,11 @@ def test_source_runs_are_left_alone(client, lab):
     assert response.json()["source_runs"] == [r"D:\instrument\run1.raw"]
 
 
-def test_the_share_can_be_opened_up(client, lab, monkeypatch):
+def test_the_share_can_be_opened_up(client, lab, monkeypatch, tmp_path):
     monkeypatch.setattr(share, "CONFIG", share.CONFIG._replace(require_on_share=False))
-    assert add(client, r"C:\elsewhere\foo.tsv").status_code == 201
+    # A real file, off the share: readable, so only the share rule is in play
+    outside = write_library(tmp_path.parent / "elsewhere" / "foo.tsv")
+    assert add(client, str(outside)).status_code == 201
 
 
 # --------------------------------------------------------- shown back per OS
