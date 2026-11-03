@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { PRIMARY_FIELDS, SECONDARY_FIELDS, FILTER_ONLY_FIELDS } from './libraryFields';
+import { PRIMARY_FIELDS, SECONDARY_FIELDS, FILTER_ONLY_FIELDS, ME_FILTER } from './libraryFields';
 import { sha256OfFile } from './hashFile';
+import { useWho } from './useWho';
 
 function FilterBar({ filters, onChange, fieldOptions }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const who = useWho();
   // The file being looked for, by name, and how far through hashing it is
   const [hashedName, setHashedName] = useState(null);
   const [hashLookupStatus, setHashLookupStatus] = useState(null);
@@ -87,6 +89,9 @@ function FilterBar({ filters, onChange, fieldOptions }) {
             onChange={(e) => handleChange(field.name, e.target.value)}
           >
             <option value="">All</option>
+            {field.meOption && (
+              <option value={ME_FILTER}>{who ? `Me (${who})` : 'Me'}</option>
+            )}
             {(fieldOptions[field.name] || []).map((opt) => (
               <option key={opt} value={opt}>{opt}</option>
             ))}

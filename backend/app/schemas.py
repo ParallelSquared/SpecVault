@@ -128,6 +128,9 @@ class LibraryResponse(LibraryBase):
     # The runs, each written for the asking machine. Runs off the share --
     # on an instrument's own disk -- are kept and shown exactly as written.
     display_source_runs: List[str] = []
+    # How many people use this library, and who: each name has starred it once
+    stars: int = 0
+    starred_by: List[str] = []
     # Every place this library's file is known to be. The first is where it was
     # catalogued and the one whose file was read; `path` above is that one.
     paths: List[str] = []

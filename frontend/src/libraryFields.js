@@ -61,7 +61,13 @@ export const COMPUTED_FIELDS = [
     name: 'path_exists', label: 'Found', filterType: 'boolean',
     default: 'exists', trueLabel: 'Found', falseLabel: 'Missing', primary: false,
   },
-  { name: 'updated_at', label: 'Last Edit', filterType: null, primary: true },
+  // The library file's modification time on the share -- not when its entry
+  // was edited here, which the history records. A short label, because the
+  // column is narrow; the header's tooltip says what it is in full.
+  {
+    name: 'updated_at', label: 'Modified', filterType: null, primary: true,
+    title: 'File modified time: when the library file was last changed on the share',
+  },
   { name: 'file_format', label: 'File Format', filterType: 'select', primary: false },
   { name: 'file_size', label: 'File Size', filterType: null, primary: false },
   {
@@ -69,7 +75,15 @@ export const COMPUTED_FIELDS = [
     trueLabel: 'Has IM', falseLabel: 'No IM', primary: false,
   },
   { name: 'decoys', label: 'Decoys', filterType: null, primary: false },
+  // Who uses it. The filter offers "Me" first, meaning whoever's name this
+  // browser has -- see ME_FILTER -- and every other name that has starred
+  // anything.
+  { name: 'starred_by', label: 'Starred By', filterType: 'multiselect', primary: false, meOption: true },
 ];
+
+// The "Starred By" filter's value for "Me": stands for the current name when
+// the list is filtered, so it follows the name if it changes.
+export const ME_FILTER = '__me__';
 
 // What a field reads as for this library: the display spelling where the field
 // has one, so that what is shown, filtered and copied are the same string.

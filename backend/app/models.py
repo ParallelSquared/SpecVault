@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text
 )
@@ -63,6 +65,37 @@ class LibraryVersion(Base):
     data = Column(JSON, nullable=False)
 
 
+class LibraryStar(Base):
+    """Somebody saying "I use this one".
+
+    One per name per library -- the pair is the key, so starring twice is
+    still one star. The name is the same self-reported one the history uses,
+    and nothing double-checks it: a star is cheap to give and cheap to get
+    wrong, and what the stars answer is "which of these do people actually
+    use", where a stray one changes nothing.
+
+    Not part of the history. A star changes nothing about the library, and
+    recording them there would bury the edits the history is for; this table
+    keeps who and when on its own.
+    """
+    __tablename__ = "library_stars"
+
+    library_id = Column(
+        Integer, ForeignKey("libraries.id", ondelete="CASCADE"), primary_key=True
+    )
+    name = Column(String, primary_key=True)
+    # Stamped here, to the microsecond, rather than by SQLite: its
+    # CURRENT_TIMESTAMP stops at the second, two stars in the same second
+    # tied, and the tie fell to alphabetical order -- not the order people
+    # starred in. UTC and without a zone, like the database's own stamps.
+    starred_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class Library(Base):
     __tablename__ = "libraries"
 
@@ -75,6 +108,16 @@ class Library(Base):
         "LibraryPath",
         cascade="all, delete-orphan",
         order_by="LibraryPath.id",
+        lazy="selectin",
+    )
+    # Not called `stars`: the response has a `stars` count, and validating it
+    # from these rows would try to read a list as a number. Oldest first, so
+    # the people listed against a library are in the order they found it.
+    # selectin for the same reason as paths -- every listing wants them all.
+    star_rows = relationship(
+        "LibraryStar",
+        cascade="all, delete-orphan",
+        order_by="LibraryStar.starred_at",
         lazy="selectin",
     )
     date_created = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

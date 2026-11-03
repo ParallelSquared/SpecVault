@@ -1249,6 +1249,11 @@ def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.L
     data.display_fasta_path = _display(lib.fasta_path, flavour)
     data.display_source_runs = [_display(run, flavour) for run in lib.source_runs or []]
 
+    # Who uses it, oldest star first. The page works out "starred by me" from
+    # this, so the listing is the same for everybody and needs no name to read.
+    data.starred_by = [row.name for row in lib.star_rows]
+    data.stars = len(data.starred_by)
+
     _, ext = os.path.splitext(lib.path or "")
     data.file_format = ext.lstrip('.').upper() if ext else None
 
@@ -1437,6 +1442,54 @@ def remove_path(
     db.commit()
     db.refresh(library)
     return _to_response(library, flavour)
+
+
+def _starrable(db: Session, library_id: int, changed_by: Optional[str]):
+    """The library to star and who is starring it -- or why not.
+
+    A star needs a name, like any change, but is not one: nothing about the
+    library moves, so nothing goes in the history and nobody is asked "not
+    you?". A deleted library cannot be starred; its stars are kept, and come
+    back with it.
+    """
+    who = _require_who(changed_by)
+    library = _live(db).filter(models.Library.id == library_id).first()
+    if not library:
+        raise HTTPException(status_code=404, detail="Library not found")
+    return library, who
+
+
+# PUT and DELETE rather than one toggle, so that a double click or a request
+# sent twice leaves the star where the person meant it rather than undoing it.
+@router.put("/{library_id}/star", response_model=schemas.LibraryResponse)
+def star_library(
+    library_id: int,
+    user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    db: Session = Depends(get_db),
+):
+    library, who = _starrable(db, library_id, changed_by)
+    if who not in (row.name for row in library.star_rows):
+        library.star_rows.append(models.LibraryStar(name=who))
+        db.commit()
+        db.refresh(library)
+    return _to_response(library, _viewer_os(user_agent))
+
+
+@router.delete("/{library_id}/star", response_model=schemas.LibraryResponse)
+def unstar_library(
+    library_id: int,
+    user_agent: Optional[str] = Header(default=None),
+    changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    db: Session = Depends(get_db),
+):
+    library, who = _starrable(db, library_id, changed_by)
+    mine = next((row for row in library.star_rows if row.name == who), None)
+    if mine is not None:
+        library.star_rows.remove(mine)
+        db.commit()
+        db.refresh(library)
+    return _to_response(library, _viewer_os(user_agent))
 
 
 @router.patch("/{library_id}", response_model=schemas.LibraryResponse)

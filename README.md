@@ -340,6 +340,31 @@ Lists say what came and went (`Tags: + reprocessed`) instead of repeating
 themselves (`demo → demo, reprocessed`), which matters most for paths, where
 the whole list twice is unreadable.
 
+## Stars
+
+A star is somebody saying "I use this one". With a few hundred libraries, the
+question people have is which of them to use, and a colleague's star is a
+cheap, honest answer — and, through who gave it, who to ask.
+
+- **One per name per library**, toggled from the ★ column. It needs a name,
+  like any change, but is not one: no "Not you?", and nothing goes in the
+  history, which stars would bury. `library_stars` keeps who and when.
+- **Hover the count to see who**: "Starred by HS, Ada".
+- **Sorted by stars by default.** Not stars only: a library added today has
+  none, would sink below everything ever starred, and so would never be found
+  to be starred. The sorts are **Stars**, **Date Added** (to SpecVault) and
+  **Date Modified** (the Modified column: when the library *file* was last
+  changed on the share, not edited here). Each starts biggest first, ↓;
+  clicking the one in use flips it, ↑. Ties go to the newest added either way
+  round, and libraries whose file is missing stay at the bottom of Date
+  Modified.
+- **Starred By** under *More filters* — "Me" first, meaning whatever name the
+  browser has now, then everyone who has starred anything.
+- **Deleting a library keeps its stars**; restoring brings them back.
+
+`PUT` and `DELETE /libraries/{id}/star` rather than one toggle, so a double
+click lands where it was meant to instead of undoing itself.
+
 ## Finding a library by its contents
 
 **Content Hash** under *More filters* takes a file from anywhere the person can
