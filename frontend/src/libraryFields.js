@@ -48,7 +48,7 @@ export const LIBRARY_FIELDS = [
   // --- Files & Notes ---
   { name: 'fasta_path', label: 'FASTA Path', type: 'text', required: false, filterType: 'text', group: 'Files & Notes', primary: false, span: 3, file: true, displayAs: 'display_fasta_path' },
   // pickExisting: false -- runs belong to one library; offering every other library's is noise
-  { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, span: 3, file: true, pickExisting: false },
+  { name: 'source_runs', label: 'Source Runs', type: 'multicombobox', required: false, filterType: null, group: 'Files & Notes', primary: false, span: 3, file: true, pickExisting: false, displayAs: 'display_source_runs' },
   { name: 'notes', label: 'Notes', type: 'textarea', required: false, filterType: 'text', group: 'Files & Notes', primary: false, wide: true },
 ];
 

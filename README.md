@@ -215,6 +215,19 @@ the catalog already has (same SHA-256) is refused with the entry it matched,
 and the path can be added to that entry instead. A path belongs to exactly one
 entry, enforced by a unique constraint across every path in the catalog.
 
+**Source runs** — the raw files a library was built from — are stored the
+same way when they are on the share, so each machine is shown them the way it
+writes paths. They are the one kind of path **never refused**: a run on an
+instrument's own disk is kept exactly as written and shown as written,
+because it records where the data came from rather than a file the catalog
+has to open, and a library should not be turned away because its runs moved.
+
+To add several runs at once, select them in Explorer and **Copy as path**
+(Ctrl+Shift+C on Windows 11; Option-Cmd-C on a Mac), then paste once into the
+Source Runs box: a pasted block becomes one run per line, quotes stripped. A
+browser cannot offer a real multi-file picker here — the file picker gives a
+page a file's name and contents but never its path.
+
 A library counts as found when **any** of its paths has the file, so one copy
 being offline does not make it missing; the files panel marks which copies are
 not there.

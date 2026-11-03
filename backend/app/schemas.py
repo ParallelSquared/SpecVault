@@ -125,6 +125,9 @@ class LibraryResponse(LibraryBase):
     display_path: Optional[str] = None
     display_creation_log_path: Optional[str] = None
     display_fasta_path: Optional[str] = None
+    # The runs, each written for the asking machine. Runs off the share --
+    # on an instrument's own disk -- are kept and shown exactly as written.
+    display_source_runs: List[str] = []
     # Every place this library's file is known to be. The first is where it was
     # catalogued and the one whose file was read; `path` above is that one.
     paths: List[str] = []

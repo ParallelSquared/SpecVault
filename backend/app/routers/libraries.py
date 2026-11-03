@@ -735,7 +735,43 @@ def _viewer_os(user_agent: Optional[str]) -> str:
 # The paths the catalog owns. source_runs are deliberately not here: they name
 # raw files that may sit on an instrument's own storage, or have since been
 # deleted, and refusing a library because its runs moved would help nobody.
+# They are stored the same way where they can be (_store_runs), just never
+# refused.
 PATH_FIELDS = ("path", "creation_log_path", "fasta_path")
+
+
+def _store_runs(runs: Optional[List[str]]) -> Optional[List[str]]:
+    """The runs a library was built from, in the form the catalog keeps.
+
+    A run on the share is stored share-relative, like every other path, so
+    that it can be shown to each machine the way that machine writes it -- a
+    run saved from Windows used to reach a Mac as \\\\PTI\\Lab\\..., which it
+    cannot paste. A run anywhere else is kept exactly as written: it is a
+    record of where the data came from, not a file the catalog has to open.
+
+    The same run typed two ways -- L:\\ and \\\\PTI\\Lab\\ -- is one run.
+    """
+    if runs is None:
+        return None
+    kept = []
+    for run in runs:
+        cleaned = _clean_path(run or "")
+        if cleaned:
+            kept.append(share.to_canonical(cleaned) or cleaned)
+    return list(dict.fromkeys(kept)) or None
+
+
+def _store_paths(values: dict) -> None:
+    """Every path in a save, an edit or a restore, put in stored form.
+
+    One place, so the three cannot drift: the runs were left out of all three
+    before, which is how a Windows spelling ended up stored for everybody.
+    """
+    for field in PATH_FIELDS:
+        if field in values:
+            values[field] = _store_path(values[field], field)
+    if "source_runs" in values:
+        values["source_runs"] = _store_runs(values["source_runs"])
 
 
 # Everything a person types about a library, which is everything worth keeping
@@ -800,14 +836,12 @@ def _snapshot(library: models.Library) -> dict:
 
 
 def _displayed_snapshot(data: dict, flavour: str) -> dict:
-    """A snapshot with its paths written for the machine asking.
-
-    `source_runs` is left alone: those are raw run paths, never canonicalised
-    on the way in, so there is nothing to translate back.
-    """
+    """A snapshot with its paths written for the machine asking."""
     shown = dict(data)
     if isinstance(shown.get("paths"), list):
         shown["paths"] = [share.to_display(p, flavour) for p in shown["paths"]]
+    if isinstance(shown.get("source_runs"), list):
+        shown["source_runs"] = [_display(run, flavour) for run in shown["source_runs"]]
     for field in ("creation_log_path", "fasta_path"):
         if shown.get(field):
             shown[field] = _display(shown[field], flavour)
@@ -970,10 +1004,17 @@ def _refuse_if_path_taken(db: Session, path: str, flavour: str) -> None:
 
 def _display(stored: Optional[str], flavour: str) -> Optional[str]:
     """A stored path written for *flavour*. Several FASTAs are one field joined
-    by "; ", so each part is rendered rather than the string as a whole."""
+    by "; ", so each part is rendered rather than the string as a whole.
+
+    A part that is not share-relative is not on the share -- a run on an
+    instrument's own disk, kept as written -- and is shown as it is. Rendering
+    it would hang the share's prefix in front of a drive letter."""
     if not stored or not share.configured():
         return stored
-    return "; ".join(share.to_display(part, flavour) for part in stored.split("; ") if part)
+    return "; ".join(
+        part if share.is_absolute(part) else share.to_display(part, flavour)
+        for part in stored.split("; ") if part
+    )
 
 
 def _log_for_viewer(log: dict, flavour: str) -> dict:
@@ -1152,6 +1193,7 @@ def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.L
     data.display_path = _display(lib.path, flavour)
     data.display_creation_log_path = _display(lib.creation_log_path, flavour)
     data.display_fasta_path = _display(lib.fasta_path, flavour)
+    data.display_source_runs = [_display(run, flavour) for run in lib.source_runs or []]
 
     _, ext = os.path.splitext(lib.path or "")
     data.file_format = ext.lstrip('.').upper() if ext else None
@@ -1216,8 +1258,7 @@ def create_library(
 ):
     data = library.model_dump()
     confirmed = data.pop("save_unreadable", False)
-    for field in PATH_FIELDS:
-        data[field] = _store_path(data.get(field), field)
+    _store_paths(data)
     path = data.pop("path")
     local = share.resolve(path)
     data.update(_file_facts(local))
@@ -1355,9 +1396,7 @@ def update_library(
         raise HTTPException(status_code=404, detail="Library not found")
     before = _snapshot(library)
     update_data = updates.model_dump(exclude_unset=True)
-    for field in PATH_FIELDS:
-        if field in update_data:
-            update_data[field] = _store_path(update_data[field], field)
+    _store_paths(update_data)
 
     # path is where the library was catalogued -- the first of its paths, and
     # the copy whose file is read. Setting it moves that one; any other places
@@ -1498,9 +1537,7 @@ def restore_library(
         # Where the library is comes from `path` below, as a list; one field
         # could only ever stand for the first of them.
         updates.pop("path", None)
-        for field in PATH_FIELDS:
-            if field in updates:
-                updates[field] = _store_path(updates[field], field)
+        _store_paths(updates)
         for field, value in updates.items():
             setattr(library, field, value)
 

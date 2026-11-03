@@ -57,7 +57,7 @@ function FileDetails({ lib }) {
     ['Creation log', log ? plain([log]) : []],
     // Several FASTAs are saved as one field, joined by "; "
     ['FASTA', fasta ? plain(fasta.split('; ')) : []],
-    ['Source runs', plain(lib.source_runs || [])],
+    ['Source runs', plain(lib.display_source_runs ?? [])],
   ].filter(([, paths]) => paths.length);
   const count = groups.reduce((n, [, paths]) => n + paths.length, 0);
   const missingCount = libraryPaths.filter((p) => p.missing).length;
