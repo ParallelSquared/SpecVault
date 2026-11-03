@@ -23,11 +23,16 @@ router = APIRouter(prefix="/libraries", tags=["libraries"])
 DEFAULT_PAGE_SIZE = 500
 MAX_PAGE_SIZE = 2000
 
+# The spellings the formats in use here write, taken from JMod's own table --
+# it reads DIA-NN, JMod, Spectronaut and FragPipe libraries, so it is the
+# list that has actually met them. The first alias present wins (_get_column),
+# so the dotted DIA-NN names lead and the rest follow.
 COLUMN_ALIASES = {
     "Modified.Sequence": [
         "Modified.Sequence",
         "ModifiedPeptide",
         "ModifiedSequence",
+        "ModifiedPeptideSequence",   # FragPipe / EasyPQP
     ],
     "Stripped.Sequence": [
         "Stripped.Sequence",
@@ -37,6 +42,7 @@ COLUMN_ALIASES = {
     "Protein.Group": [
         "Protein.Group",
         "ProteinGroup",
+        "ProteinId",                 # FragPipe, which does not separate the two
     ],
     "Precursor.Charge": [
         "Precursor.Charge",
@@ -65,10 +71,12 @@ DECOY_COLUMNS = ["Decoy", "decoy"]
 REQUIRED_PRECURSOR = ("Modified.Sequence", "Precursor.Charge")
 
 # ...and what makes a library *spectral*: for each precursor, the fragments it
-# produces. Every name library_stats knows how to read, since those are the
-# ones that would be used if the file were catalogued.
+# produces and how strongly. Every name library_stats knows how to read, plus
+# the intensity spellings, which it does not read yet but which are just as
+# good evidence that a file holds fragment rows.
 FRAGMENT_COLUMNS = [
-    name for names in library_stats.FRAGMENT_ALIASES.values() for name in names
+    *(name for names in library_stats.FRAGMENT_ALIASES.values() for name in names),
+    *library_stats.INTENSITY_ALIASES,
 ]
 
 # Columns only a search report has. Not the test -- the missing fragments are
@@ -157,8 +165,19 @@ def _read_library_df(path: str) -> pl.DataFrame:
     decoy = next((c for c in DECOY_COLUMNS if c in available), None)
     if decoy is not None:
         lf = lf.filter(~_is_decoy(pl.col(decoy)))
-    lf = lf.select(needed).unique(maintain_order=True)
-    return lf.collect(engine="streaming")
+    lf = lf.select(needed)
+
+    # FragPipe and Spectronaut wrap the sequence in underscores as terminus
+    # markers: _[527.18773]PEPTIDEK. An N-terminal label is recognised by
+    # sitting at the very start, so behind the _ it sat after nothing and was
+    # silently dropped -- every one, in a library where all 64,510 sequences
+    # are written that way. Only the outer ones go: mod names can contain
+    # underscores of their own, K(H_DM_mod), and stripping those would rename
+    # the mod and lose its identification.
+    modified = next(a for a in COLUMN_ALIASES["Modified.Sequence"] if a in available)
+    lf = lf.with_columns(pl.col(modified).str.strip_chars("_"))
+
+    return lf.unique(maintain_order=True).collect(engine="streaming")
 
 
 def _get_column(df, canonical):

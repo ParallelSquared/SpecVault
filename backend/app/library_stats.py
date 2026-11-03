@@ -13,12 +13,19 @@ import polars as pl
 
 FRAGMENT_ALIASES = {
     "type": ["Fragment.Type", "FragmentType"],
-    "number": ["Fragment.Series.Number", "FragmentSeriesNumber"],
+    "number": ["Fragment.Series.Number", "FragmentSeriesNumber", "FragmentNumber"],
     "charge": ["Fragment.Charge", "FragmentCharge"],
     "loss": ["Fragment.Loss.Type", "FragmentLossType"],
     "mz": ["Product.Mz", "ProductMz", "FragmentMz"],
 }
-ION_MOBILITY_ALIASES = ["IM", "IonMobility"]
+
+# How strongly each fragment is expected -- the other half of a spectrum, and
+# arguably the column that most makes a library a library. Nothing here reads
+# it yet; it is listed because it is evidence that a file has fragment rows,
+# which is what decides whether something is a spectral library at all.
+INTENSITY_ALIASES = ["RelativeIntensity", "LibraryIntensity", "Relative.Intensity"]
+
+ION_MOBILITY_ALIASES = ["IM", "IonMobility", "PrecursorIonMobility"]
 
 _DECOY = "__decoy"
 
@@ -50,8 +57,12 @@ def compute(lf: pl.LazyFrame, available: List[str], modified: str, charge: str,
     fragment = {key: _pick(available, names) for key, names in FRAGMENT_ALIASES.items()}
     mobility = _pick(available, ION_MOBILITY_ALIASES)
     key = [modified, charge]
+    # Without a stripped column the peptide is the modified sequence less its
+    # annotations -- and less the _ terminus markers FragPipe and Spectronaut
+    # wrap it in, or every peptide is two residues long too and starts with _.
     peptide = (pl.col(stripped) if stripped
-               else pl.col(modified).str.replace_all(annotation_pattern, "")).alias("__peptide")
+               else pl.col(modified).str.strip_chars("_")
+               .str.replace_all(annotation_pattern, "")).alias("__peptide")
 
     wanted = list(dict.fromkeys(c for c in (modified, charge, precursor_mz, mobility, *fragment.values()) if c))
     rows = lf.with_columns(

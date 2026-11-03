@@ -352,10 +352,34 @@ Formats are still decided by extension alone: `.tsv`, `.txt`, `.csv`,
 `.parquet`. `.speclib` is not among them, so DIA-NN's native binary libraries
 are refused — worth revisiting, and deliberately not special-cased now.
 
-Spectronaut and FragPipe libraries are **unverified** against this rule. Their
-column spellings are in `COLUMN_ALIASES` and `FRAGMENT_ALIASES` from earlier
-work, but no real file of either has been run through it. If one is refused,
-that is the first place to look.
+### Column spellings
+
+Every tool names these differently, and the aliases come from **JMod's own
+table** — it reads DIA-NN, JMod, Spectronaut and FragPipe libraries, so it is
+the list that has actually met them.
+
+| | DIA-NN | Spectronaut | FragPipe |
+|---|---|---|---|
+| sequence | `Modified.Sequence` | `ModifiedPeptide` | `ModifiedPeptideSequence` |
+| protein | `Protein.Group` | `ProteinGroup` | `ProteinId` |
+| fragment m/z | `Product.Mz` | `FragmentMz` | `ProductMz` |
+| fragment number | `Fragment.Series.Number` | `FragmentNumber` | `FragmentSeriesNumber` |
+| intensity | — | `RelativeIntensity` | `LibraryIntensity` |
+
+`tests/test_dialects.py` writes one library per tool and checks each is
+accepted, counted and read. A spelling dropped from the table turns a real
+library into "not a spectral library" — a confident refusal of a perfectly
+good file — so the guard matters more than the usual test.
+
+FragPipe and Spectronaut also wrap each sequence in `_` terminus markers —
+`_[527.18773]PEPTIDEK`. These are stripped on read, the outer ones only: an
+N-terminal label is recognised by sitting at the start of the sequence, so
+behind the `_` every one was dropped, while mod names such as `H_DM_mod`
+contain underscores of their own that have to survive.
+
+The first alias present wins, which is why the dotted DIA-NN names lead.
+Intensity columns are not read for anything yet; they are listed because they
+are evidence a file holds fragment rows.
 
 ## A file that cannot be read
 
