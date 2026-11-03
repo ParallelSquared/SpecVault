@@ -3,7 +3,8 @@ import { LIBRARY_FIELDS, FIELD_GROUPS, valueOf } from './libraryFields';
 import ComboBoxField from './ComboBoxField';
 import MultiComboBoxField from './MultiComboBoxField';
 import { libraryUrl, changeHeaders, whoAmI } from './api';
-import { NamePicker } from './WhoAmI';
+import { NamePicker, RecordingAs } from './WhoAmI';
+import { useWho } from './useWho';
 
 // Fields the server works out from the file on save are not the form's to send
 const FORM_FIELDS = LIBRARY_FIELDS.filter((f) => f.form !== false);
@@ -116,6 +117,12 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
   // Every place the file is, each saying whether it is there
   const [editedPaths, setEditedPaths] = useState(() => library?.path_details ?? []);
   const [removingPath, setRemovingPath] = useState(null);
+  // An edit or a removal waiting on "Recording this as ZC" being seen. The
+  // shared desktops remember one name for everybody, so the name is shown at
+  // the moment it is about to be written into the history, with "Not you?".
+  const [confirmingEdit, setConfirmingEdit] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(null);
+  const who = useWho();
   const [formData, setFormData] = useState(() => (library ? formFor(library) : emptyForm()));
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -234,6 +241,10 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (editing) {
+      setConfirmingEdit(true);
+      return;
+    }
     submit();
   };
 
@@ -332,11 +343,8 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
   // touched; the entry just stops claiming a copy that is not there, or one
   // that was pasted in by mistake.
   const handleRemovePath = async (pathId) => {
-    if (!whoAmI()) {
-      setNeedName({ what: 'path', id: pathId });
-      return;
-    }
-    setNeedName(null);
+    if (!whoAmI()) return;
+    setConfirmingRemove(null);
     setRemovingPath(pathId);
     setError(null);
     try {
@@ -526,7 +534,9 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
           </div>
           {editedPaths.map((place) => (
             <div key={place.display} style={{
+              // wraps so a removal's confirmation can sit under its own path
               display: 'flex', gap: '0.5rem', alignItems: 'baseline', marginTop: '0.2rem',
+              flexWrap: 'wrap',
             }}>
               <span style={{
                 fontFamily: 'ui-monospace, Consolas, monospace', fontSize: '0.78rem',
@@ -545,13 +555,29 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
               {editedPaths.length > 1 && (
                 <button
                   type="button"
-                  onClick={() => handleRemovePath(place.id)}
-                  disabled={removingPath !== null}
+                  onClick={() => setConfirmingRemove(place.id)}
+                  disabled={removingPath !== null || confirmingRemove !== null}
                   title="Stop recording this copy. The file is not deleted."
                   style={{ fontSize: '0.7rem', flexShrink: 0 }}
                 >
                   {removingPath === place.id ? 'Removing...' : 'Remove'}
                 </button>
+              )}
+              {confirmingRemove === place.id && (
+                <div style={{
+                  flexBasis: '100%', padding: '0.4rem 0.5rem', borderRadius: '4px',
+                  border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+                }}>
+                  <RecordingAs what="this removal" options={fieldOptions.creator || []} />
+                  <button type="button" onClick={() => handleRemovePath(place.id)}
+                          disabled={!who} style={{ fontSize: '0.75rem' }}>
+                    Remove this copy
+                  </button>
+                  <button type="button" onClick={() => setConfirmingRemove(null)}
+                          style={{ fontSize: '0.75rem', marginLeft: '0.5rem' }}>
+                    Cancel
+                  </button>
+                </div>
               )}
             </div>
           ))}
@@ -560,22 +586,6 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
               ? 'Removing a copy only stops SpecVault recording it; the file stays where it is.'
               : 'Another copy is added from the Add Library page, by saving the same file again.'}
           </p>
-          {needName?.what === 'path' && (
-            <div style={{
-              marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px',
-              border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
-            }}>
-              <p style={{ margin: '0 0 0.4rem', fontSize: '0.78rem' }}>
-                Removing a copy is recorded against a name.
-              </p>
-              <NamePicker
-                autoFocus
-                options={fieldOptions.creator || []}
-                onDone={() => handleRemovePath(needName.id)}
-                onCancel={() => setNeedName(null)}
-              />
-            </div>
-          )}
         </div>
       )}
 
@@ -741,16 +751,35 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
         </div>
       )}
 
-      <button type="submit" disabled={submitting || !!duplicate}>
-        {submitting
-          ? (editing ? 'Saving...' : 'Adding...')
-          : (editing ? 'Save changes' : 'Add Library')}
-      </button>
-      {editing && (
-        <button type="button" onClick={onCancel} disabled={submitting}
-                style={{ marginLeft: '0.5rem' }}>
-          Cancel
-        </button>
+      {confirmingEdit ? (
+        <div style={{
+          marginBottom: '0.75rem', padding: '0.75rem', borderRadius: '6px',
+          border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
+        }}>
+          <RecordingAs what="this edit" options={fieldOptions.creator || []} />
+          <button type="button" onClick={() => { setConfirmingEdit(false); submit(); }}
+                  disabled={!who || submitting}>
+            {submitting ? 'Saving...' : 'Save changes'}
+          </button>
+          <button type="button" onClick={() => setConfirmingEdit(false)}
+                  style={{ marginLeft: '0.5rem' }}>
+            Not yet
+          </button>
+        </div>
+      ) : (
+        <>
+          <button type="submit" disabled={submitting || !!duplicate}>
+            {submitting
+              ? (editing ? 'Saving...' : 'Adding...')
+              : (editing ? 'Save changes' : 'Add Library')}
+          </button>
+          {editing && (
+            <button type="button" onClick={onCancel} disabled={submitting}
+                    style={{ marginLeft: '0.5rem' }}>
+              Cancel
+            </button>
+          )}
+        </>
       )}
       {error && <p style={{ color: 'red' }}>Error: {error}</p>}
     </form>

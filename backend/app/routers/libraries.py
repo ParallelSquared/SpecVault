@@ -1,6 +1,7 @@
 import hashlib
 import os
 import re
+import socket
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -8,7 +9,7 @@ from datetime import date, datetime
 from typing import List, NamedTuple, Optional, Tuple
 
 import polars as pl
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -800,6 +801,57 @@ def _who(changed_by: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+# Which computer a change came from, by address. Looked up once per address
+# and kept: machines rarely change names, and a reverse lookup that finds
+# nothing can take seconds on a Windows network.
+_MACHINES: dict = {}
+_PENDING: dict = {}  # address -> the lookup under way for it
+_LOOKUPS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="machine-name")
+_LOOKUP_WAIT = 0.5  # seconds a change waits for a name before settling for the address
+
+
+def _machine_name(address: Optional[str]) -> Optional[str]:
+    """The network name of the computer at *address*, or the address itself.
+
+    A lookup that is slow does not hold the change up: the address is
+    recorded this time, and the name is there for the next change once the
+    lookup finishes. One lookup per address at a time, and only the change
+    that starts it waits -- a reverse lookup that finds nothing took 2.7 s
+    here, and every change in that window used to start another and wait too.
+    """
+    if not address:
+        return None
+    if address in _MACHINES:
+        return _MACHINES[address]
+    if address in _PENDING:
+        return address  # being looked up already; not worth waiting twice
+
+    def settle(done: Future) -> None:
+        try:
+            _MACHINES[address] = done.result()[0]
+        except Exception:
+            _MACHINES[address] = address  # no name to be had; stop asking
+        _PENDING.pop(address, None)
+
+    lookup = _LOOKUPS.submit(socket.gethostbyaddr, address)
+    _PENDING[address] = lookup
+    lookup.add_done_callback(settle)
+    try:
+        return lookup.result(timeout=_LOOKUP_WAIT)[0]
+    except Exception:
+        return address
+
+
+def _changed_from(request: Request) -> Optional[str]:
+    """The machine a request came from, for the history.
+
+    The browser making the request, so on a remote desktop it is the remote
+    desktop, which is the machine that matters: one shared Windows account
+    there means one remembered name for everyone who sits down at it.
+    """
+    return _machine_name(request.client.host if request.client else None)
+
+
 def _require_who(changed_by: Optional[str]) -> str:
     """The same, for a change that will not go ahead without one.
 
@@ -848,7 +900,8 @@ def _displayed_snapshot(data: dict, flavour: str) -> dict:
     return shown
 
 
-def _record(db: Session, library: models.Library, event: str, changed_by: Optional[str]) -> None:
+def _record(db: Session, library: models.Library, event: str, changed_by: Optional[str],
+            changed_from: Optional[str] = None) -> None:
     """Note what the library looks like now, and who left it that way.
 
     Called after the change has been applied to *library* and before the
@@ -859,6 +912,7 @@ def _record(db: Session, library: models.Library, event: str, changed_by: Option
         library_id=library.id,
         event=event,
         changed_by=_who(changed_by),
+        changed_from=changed_from,
         data=_snapshot(library),
     ))
 
@@ -1254,6 +1308,7 @@ def create_library(
     library: schemas.LibraryCreate,
     user_agent: Optional[str] = Header(default=None),
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     data = library.model_dump()
@@ -1284,7 +1339,7 @@ def create_library(
         # flush first: the history row needs the library's id, which the
         # database only hands out when the insert actually goes.
         db.flush()
-        _record(db, db_library, "catalogued", changed_by)
+        _record(db, db_library, "catalogued", changed_by, changed_from)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -1299,6 +1354,7 @@ def add_path(
     payload: schemas.AddPathRequest,
     user_agent: Optional[str] = Header(default=None),
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     """Record another place this library's file is.
@@ -1325,7 +1381,7 @@ def add_path(
 
     library.paths.append(models.LibraryPath(path=path))
     try:
-        _record(db, library, "path added", changed_by)
+        _record(db, library, "path added", changed_by, changed_from)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -1340,6 +1396,7 @@ def remove_path(
     path_id: int,
     user_agent: Optional[str] = Header(default=None),
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     """Stop recording one of the places this library's file is.
@@ -1376,7 +1433,7 @@ def remove_path(
 
     flavour = _viewer_os(user_agent)
     library.paths.remove(doomed)
-    _record(db, library, "path removed", changed_by)
+    _record(db, library, "path removed", changed_by, changed_from)
     db.commit()
     db.refresh(library)
     return _to_response(library, flavour)
@@ -1388,6 +1445,7 @@ def update_library(
     updates: schemas.LibraryUpdate,
     user_agent: Optional[str] = Header(default=None),
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     changed_by = _require_who(changed_by)
@@ -1425,7 +1483,7 @@ def update_library(
     # A PATCH that sets everything to what it already was is not a change, and
     # a history full of empty edits is a history nobody reads.
     if changed_file or _snapshot(library) != before:
-        _record(db, library, "file changed" if changed_file else "edited", changed_by)
+        _record(db, library, "file changed" if changed_file else "edited", changed_by, changed_from)
     try:
         db.commit()
     except IntegrityError:
@@ -1477,6 +1535,7 @@ def get_library(
 def delete_library(
     library_id: int,
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     """Take a library out of the catalog, reversibly.
@@ -1494,7 +1553,7 @@ def delete_library(
     if not library:
         raise HTTPException(status_code=404, detail="Library not found")
     library.deleted_at = func.now()
-    _record(db, library, "deleted", changed_by)
+    _record(db, library, "deleted", changed_by, changed_from)
     db.commit()
 
 
@@ -1504,6 +1563,7 @@ def restore_library(
     payload: Optional[schemas.RestoreRequest] = None,
     user_agent: Optional[str] = Header(default=None),
     changed_by: Optional[str] = Header(default=None, alias="X-SpecVault-User"),
+    changed_from: Optional[str] = Depends(_changed_from),
     db: Session = Depends(get_db),
 ):
     """Put a deleted library back in the catalog.
@@ -1551,7 +1611,7 @@ def restore_library(
     _read_again(library, given)
 
     if was_deleted or _snapshot(library) != before:
-        _record(db, library, "restored" if was_deleted else "edited", changed_by)
+        _record(db, library, "restored" if was_deleted else "edited", changed_by, changed_from)
     db.commit()
     db.refresh(library)
     return _to_response(library, flavour)
@@ -1590,6 +1650,7 @@ def get_library_history(
             recorded_at=row.recorded_at,
             event=row.event,
             changed_by=row.changed_by,
+            changed_from=row.changed_from,
             # A copy: the stored snapshot keeps the canonical spelling, which
             # is what makes it comparable across machines.
             data=_displayed_snapshot(row.data, flavour),

@@ -18,33 +18,71 @@ export const libraryUrl = (path = '') => `${API_BASE}/libraries/${path}`;
 // question people actually have. It is self-reported, and meant to be: it is
 // not a login and must never be read as one.
 //
-// Per browser, so on a shared machine two people inherit one name. That is
-// why it sits in the page header rather than out of sight: wrong is obvious
-// and one click to fix.
+// Per browser profile, and the shared remote desktops all run as one Windows
+// account -- so there, one remembered name would be everybody's. Three things
+// keep that from writing the wrong name into the history: the name lapses
+// after FORGET_AFTER_HOURS without use unless the person ticks "Remember me on
+// this computer"; edits and deletes show the name and ask "Not you?" before
+// going through; and the server records which machine each change came from.
 const WHO = 'specvault.who';
+
+// Short, because the shared desktops are used in turns: whoever sits down
+// after a break of a couple of hours is asked who they are rather than told.
+// Using the name resets the clock, so someone working steadily keeps it.
+export const FORGET_AFTER_HOURS = 2;
+const FORGET_AFTER = FORGET_AFTER_HOURS * 60 * 60 * 1000;
+
+// Fired when someone picks or forgets a name, so the page header and any open
+// prompt show the same person.
+export const WHO_CHANGED = 'specvault-who-changed';
 
 // Storage throws rather than returning null in a browser with site data
 // blocked, which should cost the name, not the page.
-export function whoAmI() {
+function read() {
   try {
-    return localStorage.getItem(WHO) || '';
+    const stored = JSON.parse(localStorage.getItem(WHO));
+    return stored && typeof stored.name === 'string' ? stored : null;
   } catch {
-    return '';
+    return null; // nothing stored, storage blocked, or the old plain-text form
   }
 }
 
-export function setWhoAmI(name) {
+function write(entry) {
   try {
-    if (name) localStorage.setItem(WHO, name);
+    if (entry) localStorage.setItem(WHO, JSON.stringify(entry));
     else localStorage.removeItem(WHO);
   } catch {
-    // Not remembered for next time; this session still sends it.
+    // Not kept; the name will be asked for again.
   }
 }
 
-// Headers for a request that changes something. Saying nothing is allowed --
-// the server records the change either way, just without a name.
+export function whoAmI() {
+  const stored = read();
+  if (!stored) return '';
+  if (!stored.remember && Date.now() > stored.until) {
+    // Lapsed. Quietly: this runs while the page is drawing, and announcing
+    // it would have other parts of the page redraw in the middle of that.
+    write(null);
+    return '';
+  }
+  return stored.name;
+}
+
+export function rememberedHere() {
+  return Boolean(read()?.remember);
+}
+
+export function setWhoAmI(name, remember = false) {
+  write(name ? { name, remember, until: Date.now() + FORGET_AFTER } : null);
+  window.dispatchEvent(new Event(WHO_CHANGED));
+}
+
+// Headers for a request that changes something. Using the name counts as
+// still being here, so the hours run from the last change rather than from
+// when the name was picked.
 export function changeHeaders(extra = {}) {
   const who = whoAmI();
-  return who ? { ...extra, 'X-SpecVault-User': who } : { ...extra };
+  if (!who) return { ...extra };
+  write({ ...read(), until: Date.now() + FORGET_AFTER });
+  return { ...extra, 'X-SpecVault-User': who };
 }

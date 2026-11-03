@@ -97,6 +97,13 @@ function Event({ row, previous }) {
         {row.changed_by
           ? row.changed_by
           : <span style={{ color: NOBODY }} title="No name was given">someone</span>}
+        {/* Where it was done. On a shared desktop the name is whoever the
+            browser remembered, so the machine is what lets it be doubted. */}
+        {row.changed_from && (
+          <span style={{ color: '#666' }} title="The computer this change was made from">
+            {' on '}{row.changed_from}
+          </span>
+        )}
         <span style={{ color: '#666' }}> · {when(row.recorded_at)}</span>
       </div>
       {edits.length > 0 && (

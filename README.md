@@ -289,9 +289,32 @@ header, and carries straight on into the change once answered.
 
 This is **self-reported and must not be read as a login**: anyone can type any
 name, and nothing is kept out by it. It answers "who should I ask about this
-entry", which is the question people actually have. It is also per browser, so
-on a shared machine the second person inherits the first one's name — which is
-why it sits in the header where a wrong name is obvious and one click to fix.
+entry", which is the question people actually have.
+
+### Shared remote desktops
+
+The name lives in the browser's `localStorage`, which belongs to a Windows
+account's browser profile — and the shared remote desktops all run as **one**
+Windows account. So there, whatever name was last picked is everybody's, and
+logging out of Windows does not clear it. Three things keep that from writing
+the wrong name into the history:
+
+- **It lapses after 2 hours without use**, unless **Remember me on this
+  computer** is ticked when picking it. The hours run from the last change
+  made, not from when the name was picked. Ticked is right for someone's own
+  PC; on a shared desktop, leave it off. **Forget *name*** in the picker clears
+  it on the spot, for leaving a shared desktop without leaving a name behind.
+- **Edits, deletions and path removals say whose name is about to be
+  written** — "Recording this edit as ZC. Not you?" — beside the button that
+  writes it, with the picker one click away.
+- **Every history row records the machine** it came from: its network name, or
+  its address where it has none ("edited by ZC on GUAC-03"). Not proof either,
+  but a change from a desk ZC was not at is something to doubt. The lookup
+  waits at most half a second; a slow one records the address that time and
+  the name from then on.
+
+The stored name is also per *address*: `localhost:8000` and
+`DESKTOP-BDIJCQE:8000` keep separate names.
 
 If accounts are ever added, the column is already there and already populated;
 the name just stops being self-reported.

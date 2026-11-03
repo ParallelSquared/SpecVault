@@ -161,6 +161,7 @@ class LibraryVersion(BaseModel):
     recorded_at: datetime
     event: str
     changed_by: Optional[str] = None
+    changed_from: Optional[str] = None  # the computer, by name or address
     data: dict
 
 

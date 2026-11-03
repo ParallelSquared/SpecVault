@@ -53,6 +53,12 @@ class LibraryVersion(Base):
     )
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     changed_by = Column(String, nullable=True)
+    # The computer the change came from: its network name where it has one,
+    # otherwise its address. Not proof of anything either -- but on a shared
+    # remote desktop, where one Windows account means one remembered name for
+    # everybody, it is what tells "ZC did this" apart from "someone at the
+    # desk ZC last used did this".
+    changed_from = Column(String, nullable=True)
     event = Column(String, nullable=False)   # see routers.libraries.EVENTS
     data = Column(JSON, nullable=False)
 

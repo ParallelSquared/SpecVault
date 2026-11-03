@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { libraryUrl, changeHeaders, whoAmI } from './api';
-import { NamePicker } from './WhoAmI';
+import { libraryUrl, changeHeaders } from './api';
+import { RecordingAs } from './WhoAmI';
+import { useWho } from './useWho';
 
 // The per-row options menu: edit a library, or delete it. Deleting is behind
 // a confirmation, because the row it sits on is a click target itself and a
@@ -11,16 +12,13 @@ const DANGER = '#b42318';
 function Menu({ lib, creators, onEdit, onDeleted, onError }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [needName, setNeedName] = useState(false);
+  // Deleting is recorded like any other change, and the confirmation says
+  // against whom -- on a shared desktop the remembered name may well be the
+  // last person's.
+  const who = useWho();
 
   const remove = async () => {
-    // Deleting is recorded like any other change, so it is asked for here
-    // rather than being allowed through unattributed.
-    if (!whoAmI()) {
-      setNeedName(true);
-      return;
-    }
-    setNeedName(false);
+    if (!who) return;
     setDeleting(true);
     try {
       const res = await fetch(libraryUrl(lib.id), {
@@ -56,29 +54,15 @@ function Menu({ lib, creators, onEdit, onDeleted, onError }) {
             The file on the share is not touched, and the entry can be brought
             back by adding the file again.
           </p>
-          {needName ? (
-            <div style={{
-              marginBottom: '0.5rem', padding: '0.5rem', borderRadius: '4px',
-              border: '1px solid #f0c674', background: '#fdf6e3', color: '#8a6d1f',
-            }}>
-              <p style={{ margin: '0 0 0.4rem', fontSize: '0.78rem' }}>
-                Deleting is recorded against a name.
-              </p>
-              <NamePicker autoFocus options={creators} onDone={remove}
-                          onCancel={() => setNeedName(false)} />
-            </div>
-          ) : (
-            <>
-              <button type="button" onClick={remove} disabled={deleting}
-                      style={{ color: DANGER, fontWeight: 600 }}>
-                {deleting ? 'Deleting...' : 'Yes, delete'}
-              </button>
-              <button type="button" onClick={() => setConfirming(false)} disabled={deleting}
-                      style={{ marginLeft: '0.5rem' }}>
-                Cancel
-              </button>
-            </>
-          )}
+          <RecordingAs what="this deletion" options={creators} />
+          <button type="button" onClick={remove} disabled={deleting || !who}
+                  style={{ color: DANGER, fontWeight: 600 }}>
+            {deleting ? 'Deleting...' : 'Yes, delete'}
+          </button>
+          <button type="button" onClick={() => setConfirming(false)} disabled={deleting}
+                  style={{ marginLeft: '0.5rem' }}>
+            Cancel
+          </button>
         </>
       ) : (
         <>
