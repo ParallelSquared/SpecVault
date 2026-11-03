@@ -1,67 +1,66 @@
 import { useState } from 'react';
 import { PRIMARY_FIELDS, SECONDARY_FIELDS, FILTER_ONLY_FIELDS } from './libraryFields';
-import { libraryUrl } from './api';
+import { sha256OfFile } from './hashFile';
 
 function FilterBar({ filters, onChange, fieldOptions }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [hashLookupPath, setHashLookupPath] = useState('');
+  // The file being looked for, by name, and how far through hashing it is
+  const [hashedName, setHashedName] = useState(null);
   const [hashLookupStatus, setHashLookupStatus] = useState(null);
-  const [hashApplied, setHashApplied] = useState(false);
 
   const handleChange = (name, value) => {
     onChange((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleHashLookup = async () => {
-    if (!hashLookupPath) return;
-    setHashLookupStatus('Hashing...');
+  // Any file the person can open -- on their own disk or on the share --
+  // hashed here in the browser; see hashFile.js for why not on the server.
+  const handleHashLookup = async (file) => {
+    if (!file) return;
+    setHashedName(file.name);
+    handleChange('content_hash', '');
+    setHashLookupStatus('Hashing... 0%');
     try {
-      const res = await fetch(libraryUrl('hash-file'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: hashLookupPath }),
+      const hash = await sha256OfFile(file, (done) => {
+        setHashLookupStatus(`Hashing... ${Math.round(done * 100)}%`);
       });
-      const body = await res.json();
-      if (!res.ok || body.error) {
-        setHashLookupStatus(body.error || body.detail || `Request failed (${res.status})`);
-        setHashApplied(false);
-        return;
-      }
-      handleChange('content_hash', body.content_hash);
-      setHashApplied(true);
+      handleChange('content_hash', hash);
       setHashLookupStatus(null);
     } catch (err) {
-      setHashLookupStatus(err.message);
-      setHashApplied(false);
+      setHashLookupStatus(`Could not read ${file.name}: ${err.message}`);
     }
+  };
+
+  const clearHashLookup = () => {
+    setHashedName(null);
+    setHashLookupStatus(null);
+    handleChange('content_hash', '');
   };
 
   const renderFilterInput = (field) => {
     if (field.name === 'content_hash') {
       return (
         <div key={field.name}>
-          <label style={{ display: 'block', fontSize: '0.75rem', color: '#555' }}>{field.label}</label>
-          <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <label style={{ display: 'block', fontSize: '0.75rem', color: '#555' }}>
+            {field.label}
+          </label>
+          {hashedName && !hashLookupStatus ? (
+            <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center', fontSize: '0.8rem' }}>
+              <span title={filters.content_hash}>{hashedName}</span>
+              <button type="button" onClick={clearHashLookup} style={{ fontSize: '0.75rem' }}>
+                Clear
+              </button>
+            </div>
+          ) : (
             <input
-              type="text"
-              placeholder="Paste a path to hash it"
-              value={hashLookupPath}
-              onChange={(e) => {
-                setHashLookupPath(e.target.value);
-                setHashApplied(false);
-                handleChange('content_hash', '');
-              }}
+              type="file"
+              // Whatever was picked last is gone once it has been read, so the
+              // same file can be picked again after a Clear
+              onChange={(e) => { handleHashLookup(e.target.files?.[0]); e.target.value = ''; }}
+              disabled={hashLookupStatus?.startsWith('Hashing')}
+              title="Find libraries with exactly the same contents as a file on your computer or the share"
               style={{ fontSize: '0.8rem' }}
             />
-            <button
-              type="button"
-              onClick={handleHashLookup}
-              disabled={hashApplied || !hashLookupPath}
-              style={{ fontSize: '0.8rem' }}
-            >
-              Hash & search
-            </button>
-          </div>
+          )}
           {hashLookupStatus && (
             <span style={{ fontSize: '0.75rem', color: '#666' }}>{hashLookupStatus}</span>
           )}

@@ -304,6 +304,26 @@ Lists say what came and went (`Tags: + reprocessed`) instead of repeating
 themselves (`demo → demo, reprocessed`), which matters most for paths, where
 the whole list twice is unreadable.
 
+## Finding a library by its contents
+
+**Content Hash** under *More filters* takes a file from anywhere the person can
+open one — their own Desktop as much as the share — and lists the catalogued
+libraries with exactly the same bytes, whatever they are called or wherever
+they have been moved to.
+
+The hashing happens **in the browser**, in `src/hashFile.js`. The server could
+not do it: it can only open paths on its own disks, so a path to someone's
+Desktop would be looked for on the host's. The file never leaves the person's
+machine; only its SHA-256 is used to search.
+
+`hash-wasm` does the hashing rather than the browser's own `crypto.subtle`,
+which only exists over HTTPS or on localhost — SpecVault is reached over plain
+HTTP. It also hashes in 8 MB pieces, where `crypto.subtle` wants the whole
+file in memory, and libraries run to gigabytes.
+
+`POST /libraries/hash-file` still exists and still refuses paths off the
+share; the UI no longer calls it.
+
 ## Deleting a library
 
 The `⋯` menu on each row deletes it, behind a confirmation. Deleting is a
