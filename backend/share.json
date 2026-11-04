@@ -4,27 +4,26 @@
     "to it, so a library catalogued from a Mac and the same library catalogued",
     "from Windows come out identical -- see app/share.py.",
     "",
-    "server_root is how THIS server reaches the share. Use the UNC path, not a",
-    "mapped drive: mapped drives belong to a logged-in session and do not exist",
-    "for a Windows service, so L:\\ resolves to nothing once SpecVault runs as",
-    "one.",
-    "",
     "mounts is every prefix a person might paste, and which flavour of path to",
-    "show them back. CHECK THE mac AND linux PREFIXES against how people",
-    "actually mount the share -- a prefix that is wrong here does not break",
-    "anything quietly, it rejects those users' paths as 'not on the share'.",
+    "show them back; for a flavour with several, the FIRST is the one shown.",
+    "CHECK THE mac PREFIX against how people actually mount the share -- a",
+    "prefix that is wrong here does not break anything quietly, it rejects",
+    "those users' paths as 'not on the share'.",
+    "",
+    "The server works out its own way in from the same list: the first mount",
+    "for its kind of machine that exists there. So this one file serves the",
+    "Windows PCs and the Linux box alike. Set server_root only for a server",
+    "that reaches the share some way no person does.",
     "",
     "require_on_share: false lets libraries outside the share be catalogued.",
     "Leave it true -- an entry nobody else can open defeats the point."
   ],
 
-  "server_root": "\\\\PTI\\Lab",
-
   "mounts": [
     { "os": "windows", "prefix": "\\\\PTI\\Lab" },
     { "os": "windows", "prefix": "L:" },
     { "os": "mac", "prefix": "/Volumes/Lab" },
-    { "os": "linux", "prefix": "/mnt/lab" }
+    { "os": "linux", "prefix": "/home/ip2/syno_mount/lab" }
   ],
 
   "require_on_share": true

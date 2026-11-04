@@ -84,7 +84,9 @@ a service running as `LocalSystem` reaches the network as the *machine*
 account, and mapped drives do not exist for services at all. So:
 
 - run the service as a domain account with read access to `\\PTI\Lab`
-- set `server_root` in `share.json` to the UNC path, never `L:\`
+- leave `L:` out of it: the server picks the first `windows` mount in
+  `share.json` that exists for it, and a service has no `L:`, so it lands on
+  `\\PTI\Lab` by itself
 
 This is the mistake that works perfectly when tested by hand and then fails
 for every library once it is a service.
@@ -203,8 +205,8 @@ hand-written `batch_op.alter_column(..., new_column_name=...)` instead.
 
 The same library file has a different path on every machine — `L:\Libraries\foo.tsv`
 on a Windows box with the drive mapped, `\\PTI\Lab\Libraries\foo.tsv` on one
-without, `/Volumes/Lab/Libraries/foo.tsv` on a Mac, `/mnt/lab/Libraries/foo.tsv`
-on Linux. There is no absolute path that works everywhere, so the catalog does
+without, `/Volumes/Lab/Libraries/foo.tsv` on a Mac,
+`/home/ip2/syno_mount/lab/Libraries/foo.tsv` on the Linux box. There is no absolute path that works everywhere, so the catalog does
 not store one: it stores `Libraries/foo.tsv`, the path *within* the share, and
 each side renders it the way its own machine writes paths.
 
@@ -525,12 +527,11 @@ Three things follow from storing paths share-relative:
 
 ```json
 {
-  "server_root": "\\\\PTI\\Lab",
   "mounts": [
     { "os": "windows", "prefix": "\\\\PTI\\Lab" },
     { "os": "windows", "prefix": "L:" },
     { "os": "mac", "prefix": "/Volumes/Lab" },
-    { "os": "linux", "prefix": "/mnt/lab" }
+    { "os": "linux", "prefix": "/home/ip2/syno_mount/lab" }
   ],
   "require_on_share": true
 }
@@ -538,12 +539,19 @@ Three things follow from storing paths share-relative:
 
 | Key | |
 |---|---|
-| `server_root` | how **this server** reaches the share. Use the UNC path — a mapped drive belongs to a logged-in session and does not exist for a Windows service |
 | `mounts` | every prefix someone might paste, and which flavour to show back. Where a flavour has several, **the first is the one displayed** |
+| `server_root` | optional, and normally left out — see below. Only for a server that reaches the share some way no person does |
 | `require_on_share` | `false` allows libraries outside the share. Leave it `true` |
 
-Check the `mac` and `linux` prefixes against how people actually mount the
-share. A wrong one does not fail quietly — it rejects those users' paths as
+**The server finds its own way in from `mounts`**: the first one listed for
+its kind of machine that exists there. So the same `share.json` serves every
+host — a Windows PC lands on `\\PTI\Lab`, the Linux box on
+`/home/ip2/syno_mount/lab` — and no machine keeps a copy that drifts. If none
+of its mounts is there when it starts (the share is briefly away), it logs a
+warning and uses the first listed, which is the right place once the share is
+back.
+
+Check the `mac` prefix against how people actually mount the share. A wrong one does not fail quietly — it rejects those users' paths as
 not being on the share.
 
 Without `share.json`, or with a malformed one, the catalog stores paths exactly

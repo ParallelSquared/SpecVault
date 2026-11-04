@@ -4,6 +4,8 @@ If they do not, the catalog grows a second entry every time someone on a
 different machine adds a library that is already in it -- which is the failure
 the share-relative path exists to prevent.
 """
+import json
+
 import pytest
 
 from app import share
@@ -156,6 +158,88 @@ class TestConfigLoading:
         config = share.load()
         assert config.server_root, "shipped share.json did not load"
         assert config.mounts
+
+    def test_server_root_can_be_left_out(self, tmp_path):
+        """And normally is: the server finds its own way in from the mounts."""
+        good = tmp_path / "share.json"
+        good.write_text(
+            json.dumps({"mounts": [{"os": share.this_os(), "prefix": str(tmp_path)}]}),
+            encoding="utf-8",
+        )
+        assert share.load(str(good)).server_root == str(tmp_path)
+
+    def test_a_server_root_given_is_used_as_given(self, tmp_path):
+        good = tmp_path / "share.json"
+        good.write_text(json.dumps({
+            "server_root": "/srv/lab",
+            "mounts": [{"os": share.this_os(), "prefix": str(tmp_path)}],
+        }), encoding="utf-8")
+        assert share.load(str(good)).server_root == "/srv/lab"
+
+
+class TestFindingTheServersOwnMount:
+    """One share.json for every host: each server takes the first mount for
+    its own kind of machine that is really there."""
+
+    MOUNTS = [
+        share.Mount(share.WINDOWS, r"\\PTI\Lab"),
+        share.Mount(share.WINDOWS, "L:"),
+        share.Mount(share.MAC, "/Volumes/Lab"),
+        share.Mount(share.LINUX, "/home/ip2/syno_mount/lab"),
+    ]
+
+    def detect(self, machine, there):
+        return share.detect_root(self.MOUNTS, machine=machine, exists=lambda p: p in there)
+
+    def test_the_linux_box_finds_its_mount(self):
+        assert self.detect(share.LINUX, {"/home/ip2/syno_mount/lab"}) == "/home/ip2/syno_mount/lab"
+
+    def test_a_windows_pc_finds_the_unc_path(self):
+        assert self.detect(share.WINDOWS, {r"\\PTI\Lab", "L:"}) == r"\\PTI\Lab"
+
+    def test_a_windows_service_without_l_drive_still_finds_the_share(self):
+        """The old trap: a mapped drive is a logged-in session's, and a
+        service has none. Listed first or not, a missing L: is passed over."""
+        mounts = [share.Mount(share.WINDOWS, "L:"), share.Mount(share.WINDOWS, r"\\PTI\Lab")]
+        found = share.detect_root(mounts, machine=share.WINDOWS, exists=lambda p: p == r"\\PTI\Lab")
+        assert found == r"\\PTI\Lab"
+
+    def test_another_kinds_mount_is_never_chosen(self):
+        """A Linux server never picks a Windows path just because it exists."""
+        assert self.detect(share.LINUX, {r"\\PTI\Lab", "/home/ip2/syno_mount/lab"}) \
+            == "/home/ip2/syno_mount/lab"
+
+    def test_a_share_that_is_away_falls_back_to_the_first_listed(self):
+        """Down at startup is not misconfigured: point at the right place and
+        find the files once the share is back."""
+        assert self.detect(share.WINDOWS, set()) == r"\\PTI\Lab"
+
+    def test_no_mount_for_this_kind_of_machine_means_no_share(self):
+        mounts = [share.Mount(share.WINDOWS, r"\\PTI\Lab")]
+        assert share.detect_root(mounts, machine=share.LINUX, exists=lambda p: True) == ""
+
+
+class TestTheLinuxBox:
+    """The real Linux mount, end to end."""
+
+    @pytest.fixture(autouse=True)
+    def linux(self, monkeypatch):
+        mounts = share.load().mounts  # the shipped share.json
+        monkeypatch.setattr(share, "CONFIG", share.ShareConfig(
+            server_root=share.detect_root(
+                mounts, machine=share.LINUX, exists=lambda p: p == "/home/ip2/syno_mount/lab"),
+            mounts=mounts,
+        ))
+
+    def test_its_paths_are_the_same_library_as_windows_paths(self):
+        assert share.to_canonical("/home/ip2/syno_mount/lab/ZC/paths.txt") == "ZC/paths.txt"
+        assert share.to_canonical(r"\\PTI\Lab\ZC\paths.txt") == "ZC/paths.txt"
+
+    def test_it_opens_files_through_its_own_mount(self):
+        assert share.to_local("ZC/paths.txt") == "/home/ip2/syno_mount/lab/ZC/paths.txt"
+
+    def test_linux_users_are_shown_that_mount(self):
+        assert share.to_display("ZC/paths.txt", share.LINUX) == "/home/ip2/syno_mount/lab/ZC/paths.txt"
 
 
 class TestPosixServer:

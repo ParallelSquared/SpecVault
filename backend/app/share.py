@@ -3,10 +3,10 @@
 The same file on the lab share has a different path depending on who is
 looking at it:
 
-    \\\\PTI\\Lab\\Libraries\\foo.tsv     a Windows machine, by UNC
-    L:\\Libraries\\foo.tsv               the same machine, by mapped drive
-    /Volumes/Lab/Libraries/foo.tsv       a Mac
-    /mnt/lab/Libraries/foo.tsv           a Linux box
+    \\\\PTI\\Lab\\Libraries\\foo.tsv                  a Windows machine, by UNC
+    L:\\Libraries\\foo.tsv                            the same machine, by mapped drive
+    /Volumes/Lab/Libraries/foo.tsv                    a Mac
+    /home/ip2/syno_mount/lab/Libraries/foo.tsv        the Linux box
 
 There is no absolute path that works everywhere, so the catalog does not store
 one. It stores the part that is the same for everyone -- "Libraries/foo.tsv",
@@ -25,11 +25,15 @@ The mounts are configuration, not code: see share.json next to this package,
 or point SHARE_CONFIG somewhere else.
 """
 import json
+import logging
 import ntpath
 import os
 import posixpath
 import re
+import sys
 from typing import List, NamedTuple, Optional
+
+log = logging.getLogger(__name__)
 
 # Where the config lives unless SHARE_CONFIG says otherwise. Beside the backend
 # package rather than inside it: it describes this deployment, not the code.
@@ -62,19 +66,63 @@ class ShareConfig(NamedTuple):
     require_on_share: bool = True
 
 
+def this_os() -> str:
+    """Which kind of machine the server is running on."""
+    if sys.platform.startswith("win"):
+        return WINDOWS
+    if sys.platform == "darwin":
+        return MAC
+    return LINUX
+
+
+def detect_root(mounts: List[Mount], machine: Optional[str] = None,
+                exists=os.path.isdir) -> str:
+    """How this server reaches the share, worked out from the mounts.
+
+    The first mount listed for the server's own kind of machine that is
+    really there. So one share.json serves every host: a Windows PC finds
+    \\\\PTI\\Lab, the Linux box finds its own mount, and nobody keeps a copy
+    per machine that drifts. Checking that it exists is also what keeps a
+    Windows service off L: -- a mapped drive belongs to a logged-in session,
+    and a service has none.
+
+    If none of them is there, the share is probably just away for now: the
+    first one listed is used anyway, so the server comes up pointing at the
+    right place and finds the files once the share is back.
+    """
+    machine = machine or this_os()
+    mine = [m.prefix for m in mounts if m.os == machine]
+    if not mine:
+        log.warning(
+            "share.json lists no %s mount, so this server cannot reach the share. "
+            "Add one, or set server_root.", machine,
+        )
+        return ""
+    found = next((prefix for prefix in mine if exists(prefix)), None)
+    if found is None:
+        log.warning("None of the %s mounts in share.json is there right now (%s); "
+                    "using %s.", machine, ", ".join(mine), mine[0])
+        return mine[0]
+    return found
+
+
 def load(path: Optional[str] = None) -> ShareConfig:
     """Read the share configuration. A missing or malformed file leaves the
     catalog with no share: paths are then stored as typed and nothing is
-    rejected, so a misconfigured server is awkward rather than unusable."""
+    rejected, so a misconfigured server is awkward rather than unusable.
+
+    server_root is optional, and normally left out: see detect_root. Set it
+    only for a server that reaches the share some way no person does."""
     path = path or os.getenv("SHARE_CONFIG") or _DEFAULT_CONFIG
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-        root = str(data["server_root"])
         mounts = [Mount(str(m["os"]), str(m["prefix"])) for m in data["mounts"]]
+        root = str(data.get("server_root") or "")
     except (OSError, ValueError, KeyError, TypeError):
         return ShareConfig("", [], require_on_share=False)
-    return ShareConfig(root, mounts, bool(data.get("require_on_share", True)))
+    return ShareConfig(root or detect_root(mounts), mounts,
+                       bool(data.get("require_on_share", True)))
 
 
 CONFIG = load()
