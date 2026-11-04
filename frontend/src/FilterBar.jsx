@@ -1,7 +1,21 @@
 import { useState } from 'react';
-import { PRIMARY_FIELDS, SECONDARY_FIELDS, FILTER_ONLY_FIELDS, ME_FILTER } from './libraryFields';
+import {
+  ALL_FILTERABLE_FIELDS, FILTER_SECTIONS, ME_FILTER, TOP_FILTERS,
+} from './libraryFields';
 import { sha256OfFile } from './hashFile';
 import { useWho } from './useWho';
+
+// The same column tracks for the top row and every section, so filters line up
+// down the page whatever row they are in. auto-fill rather than auto-fit: a
+// short row keeps its columns the width of a full one instead of stretching.
+const GRID = {
+  display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '0.6rem 0.75rem',
+};
+const FILL = { width: '100%', boxSizing: 'border-box' };
+const SECTION_TITLE = {
+  margin: '0 0 0.35rem', fontSize: '0.7rem', fontWeight: 600, letterSpacing: '0.05em',
+  textTransform: 'uppercase', color: '#888', borderBottom: '1px solid #e2e2e2', paddingBottom: '0.2rem',
+};
 
 function FilterBar({ filters, onChange, fieldOptions }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -80,6 +94,7 @@ function FilterBar({ filters, onChange, fieldOptions }) {
             placeholder="Filter..."
             value={filters[field.name] || ''}
             onChange={(e) => handleChange(field.name, e.target.value)}
+            style={FILL}
           />
         )}
 
@@ -87,6 +102,7 @@ function FilterBar({ filters, onChange, fieldOptions }) {
           <select
             value={filters[field.name] || ''}
             onChange={(e) => handleChange(field.name, e.target.value)}
+            style={FILL}
           >
             <option value="">All</option>
             {field.meOption && (
@@ -102,6 +118,7 @@ function FilterBar({ filters, onChange, fieldOptions }) {
           <select
             value={filters[field.name] || 'all'}
             onChange={(e) => handleChange(field.name, e.target.value)}
+            style={FILL}
           >
             <option value="all">All</option>
             <option value="exists">{field.trueLabel || 'Yes'} only</option>
@@ -112,14 +129,19 @@ function FilterBar({ filters, onChange, fieldOptions }) {
     );
   };
 
-  const primaryFilterable = PRIMARY_FIELDS.filter((f) => f.filterType);
-  const secondaryFilterable = [...SECONDARY_FIELDS.filter((f) => f.filterType), ...FILTER_ONLY_FIELDS];
+  const filterable = ALL_FILTERABLE_FIELDS.filter((f) => f.filterType);
+  const byName = Object.fromEntries(filterable.map((f) => [f.name, f]));
+  const pick = (names) => names.map((name) => byName[name]).filter(Boolean);
+  const placed = new Set([...TOP_FILTERS, ...FILTER_SECTIONS.flatMap(([, names]) => names)]);
+  const unplaced = filterable.filter((f) => !placed.has(f.name));
+  const sections = [
+    ...FILTER_SECTIONS.map(([title, names]) => [title, pick(names)]),
+    ...(unplaced.length ? [['Other', unplaced]] : []),
+  ];
 
   return (
     <div style={{ marginBottom: '1rem', padding: '0.75rem', background: '#f7f7f7', borderRadius: '6px' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
-        {primaryFilterable.map(renderFilterInput)}
-      </div>
+      <div style={GRID}>{pick(TOP_FILTERS).map(renderFilterInput)}</div>
 
       <button
         type="button"
@@ -129,11 +151,12 @@ function FilterBar({ filters, onChange, fieldOptions }) {
         {showAdvanced ? '▾ Hide more filters' : '▸ More filters'}
       </button>
 
-      {showAdvanced && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
-          {secondaryFilterable.map(renderFilterInput)}
-        </div>
-      )}
+      {showAdvanced && sections.map(([title, fields]) => (
+        <section key={title} style={{ marginTop: '0.75rem' }}>
+          <h3 style={SECTION_TITLE}>{title}</h3>
+          <div style={GRID}>{fields.map(renderFilterInput)}</div>
+        </section>
+      ))}
     </div>
   );
 }

@@ -101,5 +101,20 @@ export const GRID_FIELDS = [
 // The Add form's sections, in order
 export const FIELD_GROUPS = ['Core Info', 'Sample Info', 'Method Info', 'Files & Notes'];
 
+// The filters always shown: the table's own columns, and who uses it
+export const TOP_FILTERS = ['path', 'creator', 'tags', 'protease', 'species', 'starred_by'];
+
+// The rest, under More filters, in sections of their own rather than the Add
+// form's: filtering, Path to Creation Log is a path to find, not core info.
+// A filterable field left out of every list here is not lost -- it turns up
+// under "Other" -- so adding a field does not mean remembering this list.
+export const FILTER_SECTIONS = [
+  ['Project & Sample', ['project', 'cell_types', 'tissues']],
+  ['Method', ['carbamidomethylated', 'ptms', 'search_algorithm', 'software_version', 'mbr',
+    'instrument', 'acquisition_type', 'vendor', 'in_silico', 'finetuning', 'ion_mobility']],
+  ['Files & Notes', ['path_exists', 'file_format', 'creation_log_path', 'fasta_path', 'notes',
+    'content_hash']],
+];
+
 // Everything filterable, including hidden-from-display fields
 export const ALL_FILTERABLE_FIELDS = [...ALL_DISPLAY_FIELDS, ...FILTER_ONLY_FIELDS];

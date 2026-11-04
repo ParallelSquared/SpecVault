@@ -28,6 +28,9 @@ const MAX_ROWS = 5000;
 // never buried among its equals.
 const SORTS = [
   { value: 'stars', label: 'Stars', key: (lib) => lib.stars },
+  // How big a library is. One saved without being readable has no count, and
+  // stays at the bottom whichever way round rather than reading as empty.
+  { value: 'precursors', label: 'Precursors', key: (lib) => lib.precursors ?? null },
   { value: 'added', label: 'Date Added', key: (lib) => lib.id },
   // The Modified column: when the library file was last changed on the share,
   // not when its entry was edited here. A library whose file cannot be found

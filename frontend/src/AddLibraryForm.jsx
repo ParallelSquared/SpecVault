@@ -44,6 +44,9 @@ const PATH_FIELDS = new Set(['path', 'creation_log_path', 'fasta_path']);
 // Same amber as the files panel uses for a copy that is not there
 const MISSING = '#b45309';
 
+// The asterisk on a field that has to be filled in
+const REQUIRED = '#c62828';
+
 // The form as the API wants it: blanks become null, empty lists too, and paths
 // are tidied of the quotes and spaces that come with pasting from a file
 // manager. *withoutPath* where the library's own location is not the form's to
@@ -398,7 +401,8 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
       }}
     >
       <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>
-        {field.label}{field.required ? ' *' : ''}
+        {field.label}
+        {field.required && <span style={{ color: REQUIRED }} title="Required"> *</span>}
       </label>
 
       {field.type === 'text' && (
