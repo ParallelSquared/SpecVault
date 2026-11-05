@@ -388,7 +388,12 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
 
   // The paths with their own Auto-fill, shown to the right of the box
   const autoFills = {
-    path: { onClick: handleAutoFill, busy: analyzing, label: 'Auto-fill from file', busyLabel: 'Analyzing...', message: analyzeMessage },
+    path: {
+      onClick: handleAutoFill, busy: analyzing, label: 'Auto-fill from file', message: analyzeMessage,
+      // A .speclib is read by having DIA-NN convert it first, which takes minutes
+      busyLabel: /\.speclib["']?\s*$/i.test(formData.path || '')
+        ? 'Converting with DIA-NN, can take a few minutes...' : 'Analyzing...',
+    },
     creation_log_path: { onClick: handleLogAutoFill, busy: readingLog, label: 'Auto-fill from log', busyLabel: 'Reading log...', message: logMessage },
   };
 

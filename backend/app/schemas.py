@@ -108,6 +108,11 @@ class LibraryResponse(LibraryBase):
     path: Optional[str] = None
     # Built by the server from the saved file, never taken from a request
     content_hash: Optional[str] = None
+    # A .speclib's .parquet copy, which is what was read (app/speclib.py),
+    # and that file's hash, which finds this library as well as its own does
+    readable_copy_path: Optional[str] = None
+    readable_copy_hash: Optional[str] = None
+    display_readable_copy_path: Optional[str] = None
     precursors: Optional[int] = None
     proteins: Optional[int] = None
     mod_details: Optional[List[ModDetail]] = None

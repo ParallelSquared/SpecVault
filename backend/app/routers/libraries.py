@@ -10,11 +10,11 @@ from typing import List, NamedTuple, Optional, Tuple
 
 import polars as pl
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import creation_log, library_stats, models, mods, schemas, share
+from .. import creation_log, library_stats, models, mods, schemas, share, speclib
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -140,6 +140,12 @@ def _scan_library(path: str) -> pl.LazyFrame:
         return pl.scan_csv(path)
     if ext == ".parquet":
         return pl.scan_parquet(path)
+    if speclib.is_speclib(path):
+        # DIA-NN's own format, read through the .parquet copy DIA-NN makes of
+        # it -- made here on first reading, so this can take minutes. Raises
+        # speclib.Unreadable, saying why, when there is no copy and none can
+        # be made.
+        return pl.scan_parquet(speclib.readable_copy(path))
     raise ValueError(f"Unsupported file extension: {ext}")
 
 
@@ -476,7 +482,13 @@ def _file_identity(path: str) -> Optional[tuple]:
         stat = os.stat(path)
     except OSError:
         return None
-    return (os.path.normcase(os.path.abspath(path)), stat.st_size, stat.st_mtime_ns)
+    identity = (os.path.normcase(os.path.abspath(path)), stat.st_size, stat.st_mtime_ns)
+    if speclib.is_speclib(path):
+        # A .speclib is read through its copy, so the copy appearing -- made
+        # by the Linux server, read from a PC with no DIA-NN -- is a new
+        # reading, not the remembered "DIA-NN is not set up"
+        identity += (speclib.existing_copy(path),)
+    return identity
 
 
 class _PerFile:
@@ -598,7 +610,7 @@ def _build_analysis(path: str) -> Optional[FileAnalysis]:
     try:
         df = _read_library_df(path)
         return _analyse(df, _mod_report(df))
-    except NotALibrary as not_one:
+    except (NotALibrary, speclib.Unreadable) as not_one:
         return FileAnalysis(None, None, None, problem=str(not_one))
     except Exception:
         return FileAnalysis(None, None, None, problem=None)
@@ -615,11 +627,27 @@ def _analysis_for(path: str) -> Optional[FileAnalysis]:
     return _ANALYSES.get_or_make(identity, lambda: _build_analysis(path))
 
 
+def _convert_first(path: str) -> Optional[str]:
+    """For a .speclib, its .parquet copy, made now if need be; None for any
+    other file, or when no copy can be made (the parse then says why).
+
+    Before anything else is started, because the copy is part of the file's
+    identity (_file_identity): the hash, stats and parse started with and
+    without it would be filed under two versions of the file."""
+    if not speclib.is_speclib(path):
+        return None
+    try:
+        return speclib.readable_copy(path)
+    except speclib.Unreadable:
+        return None
+
+
 def _file_facts(path: str) -> dict:
     """The library's fields that come from the file at *path*: its hash, mod
     table, counts and stats. Whatever was not worked out in advance runs at
     once: the hash and the stats in the background while the parse happens
     here, so it takes as long as the slowest, not their sum."""
+    copy = _convert_first(path)
     hash_job, stats_job = _start_hash(path), _start_stats(path)
     analysis = _analysis_for(path)
     return {
@@ -628,11 +656,16 @@ def _file_facts(path: str) -> dict:
         "precursors": analysis.precursors if analysis else None,
         "proteins": analysis.proteins if analysis else None,
         "library_stats": _result(stats_job),
+        "readable_copy_path": _store_or_keep(copy) if copy else None,
+        "readable_copy_hash": _result(_start_hash(copy)) if copy else None,
     }
 
 
 # What a library's file says about it, as opposed to what people typed.
-READ_FROM_FILE = ("mod_details", "precursors", "proteins", "library_stats")
+READ_FROM_FILE = (
+    "mod_details", "precursors", "proteins", "library_stats",
+    "readable_copy_path", "readable_copy_hash",
+)
 
 
 def _read_again(library: models.Library, given: Optional[str] = None) -> None:
@@ -949,9 +982,14 @@ def _catalogued_as(
     """
     if not content_hash:
         return None  # unreadable file: no hash is not the same as a matching one
+    # The .parquet copy of a catalogued .speclib is that library too, in the
+    # only form SpecVault can read -- not a second library to catalogue.
     matches = (
         db.query(models.Library)
-        .filter(models.Library.content_hash == content_hash)
+        .filter(or_(
+            models.Library.content_hash == content_hash,
+            models.Library.readable_copy_hash == content_hash,
+        ))
         .order_by(models.Library.id)
         .all()
     )
@@ -961,14 +999,23 @@ def _catalogued_as(
     # there is no live one.
     existing = next((row for row in matches if row.deleted_at is None), matches[0])
     deleted_on = _deleted_on(existing)
+    is_copy = existing.content_hash != content_hash
+    if is_copy:
+        message = (
+            "This is the .parquet copy SpecVault made of a .speclib that is "
+            + (f"in SpecVault, deleted on {deleted_on}." if deleted_on else "already in SpecVault.")
+        )
+    elif deleted_on:
+        message = f"This library was deleted from SpecVault on {deleted_on}."
+    else:
+        message = "Library already exists in SpecVault."
     return schemas.DuplicateLibrary(
-        message=(
-            f"This library was deleted from SpecVault on {deleted_on}."
-            if deleted_on else "Library already exists in SpecVault."
-        ),
+        message=message,
         library_id=existing.id,
         paths=[share.to_display(row.path, flavour) for row in existing.paths],
-        already_recorded=any(row.path == path for row in existing.paths),
+        # A copy is never another of the entry's paths: those are all the same
+        # bytes, and these are not. Recorded already, as its readable copy.
+        already_recorded=is_copy or any(row.path == path for row in existing.paths),
         deleted=deleted_on is not None,
     )
 
@@ -1115,13 +1162,20 @@ def analyze_library(
     if not os.path.exists(path):
         raise HTTPException(status_code=400, detail="File not found at that path")
 
+    # A .speclib's copy first: everything below reads it, and is filed under it
+    if speclib.is_speclib(path):
+        try:
+            speclib.readable_copy(path)
+        except speclib.Unreadable as unreadable:
+            raise HTTPException(status_code=400, detail=str(unreadable))
+
     # Not waited for: these are Save's to collect, and by then they are done.
     _start_hash(path)
     _start_stats(path)
 
     try:
         df = _read_library_df(path)
-    except NotALibrary as not_one:
+    except (NotALibrary, speclib.Unreadable) as not_one:
         # Says what is wrong with the file, not that reading it went wrong
         raise HTTPException(status_code=400, detail=str(not_one))
     except Exception as e:
@@ -1132,6 +1186,10 @@ def analyze_library(
     report = _mod_report(df)
     analysis = _analyse(df, report)
     _remember_analysis(path, analysis)
+    if speclib.is_speclib(path):
+        # The copy just read is hashed too, for finding the library by it --
+        # started now, like the .speclib's own, so Save only collects it
+        _start_hash(speclib.existing_copy(path) or "")
 
     notes = []
     missing = _find_missing_columns(df)
@@ -1142,6 +1200,11 @@ def analyze_library(
         )
     if report.note:
         notes.append(report.note)
+    if speclib.is_speclib(path):
+        notes.append(
+            f"Read from {os.path.basename(speclib.copy_path(path))}, the .parquet copy of "
+            "this .speclib that DIA-NN made next to it. It is saved with the library."
+        )
 
     # The creation log: the one given, or else one where its software leaves it
     given = _local_path(payload.creation_log_path, "creation_log_path") if payload.creation_log_path else ""
@@ -1248,6 +1311,7 @@ def _to_response(lib: models.Library, flavour: str = share.WINDOWS) -> schemas.L
     data.display_creation_log_path = _display(lib.creation_log_path, flavour)
     data.display_fasta_path = _display(lib.fasta_path, flavour)
     data.display_source_runs = [_display(run, flavour) for run in lib.source_runs or []]
+    data.display_readable_copy_path = _display(lib.readable_copy_path, flavour)
 
     # Who uses it, oldest star first. The page works out "starred by me" from
     # this, so the listing is the same for everybody and needs no name to read.

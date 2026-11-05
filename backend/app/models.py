@@ -155,6 +155,13 @@ class Library(Base):
     precursors = Column(Integer, nullable=True)
     proteins = Column(Integer, nullable=True)
     content_hash = Column(String, nullable=True, index=True)
+    # For a library SpecVault cannot read itself -- DIA-NN's .speclib -- the
+    # .parquet copy it had DIA-NN make, which everything read from the file
+    # was read from. Share-relative like every path. Its hash is kept as well,
+    # so that looking a library up by the copy finds it as surely as by the
+    # .speclib. NULL for every other library. See app/speclib.py.
+    readable_copy_path = Column(String, nullable=True)
+    readable_copy_hash = Column(String, nullable=True, index=True)
     fasta_path = Column(String, nullable=True)
     in_silico = Column(String, nullable=True)
 

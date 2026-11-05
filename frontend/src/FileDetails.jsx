@@ -52,8 +52,11 @@ function FileDetails({ lib }) {
   const libraryPaths = (lib.path_details ?? [])
     .map((d) => ({ path: d.display, missing: !d.exists }));
   const plain = (paths) => paths.map((path) => ({ path, missing: false }));
+  // A .speclib's .parquet copy, which DIA-NN made for SpecVault to read
+  const readableCopy = lib.display_readable_copy_path || lib.readable_copy_path;
   const groups = [
     [libraryPaths.length > 1 ? `Library (${libraryPaths.length} copies)` : 'Library', libraryPaths],
+    ['Parquet copy', readableCopy ? plain([readableCopy]) : []],
     ['Creation log', log ? plain([log]) : []],
     // Several FASTAs are saved as one field, joined by "; "
     ['FASTA', fasta ? plain(fasta.split('; ')) : []],

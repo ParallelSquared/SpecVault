@@ -162,6 +162,7 @@ share — SQLite over SMB corrupts.
 | `backend/.env` | `SHARE_CONFIG` | `backend/share.json` |
 | `backend/.env` | `UI_DIR` | `frontend/dist` |
 | `backend/.env` | `CORS_ORIGINS` | unset — not needed either way |
+| `backend/.env` | `DIANN_PATH` | `diann-linux` or `diann` on the `PATH`; see [.speclib](#dia-nns-speclib) |
 | `frontend/.env` | `VITE_DEV_API` | `http://127.0.0.1:8000` (dev proxy only) |
 | `frontend/.env` | `VITE_API_BASE` | unset — same origin |
 
@@ -431,9 +432,38 @@ name, since knowing it is a report tells you which file to go and find.
 the second is derivable from the modified sequence, and neither decides
 whether the thing is a library.
 
-Formats are still decided by extension alone: `.tsv`, `.txt`, `.csv`,
-`.parquet`. `.speclib` is not among them, so DIA-NN's native binary libraries
-are refused — worth revisiting, and deliberately not special-cased now.
+Formats are decided by extension alone: `.tsv`, `.txt`, `.csv`, `.parquet`,
+and `.speclib` (below).
+
+### DIA-NN's .speclib
+
+A `.speclib` is DIA-NN's own binary format, so SpecVault has DIA-NN rewrite
+it as `.parquet` and reads that. DIA-NN is given the library and no runs:
+
+```
+diann-linux --lib X.speclib --out-lib <scratch>/library.parquet --gen-spec-lib
+```
+
+The copy goes next to the `.speclib`, named `X-specvault.parquet`
+(`lib.predicted.speclib` → `lib.predicted-specvault.parquet`). It is made
+on the first Auto-fill or Save, which can take a few minutes for a big library.
+After that it is reused, unless the `.speclib` is newer than the copy.
+
+The entry is still the `.speclib`. That is its path, its hash and its file
+format. The copy's path and hash are kept with it, under Show files →
+Parquet copy. Finding a library by its contents works with either file, and
+adding the copy as a library of its own is refused, pointing at the `.speclib`'s
+entry.
+
+**Where DIA-NN is:** `DIANN_PATH` in `backend/.env` (or the service's
+environment), otherwise `diann-linux` or `diann` on the `PATH`. A server
+with no DIA-NN, like a Windows PC in development, still reads a `.speclib`
+whose copy is already there. It just cannot make new copies, so an Auto-fill
+says DIA-NN is not set up and Save offers to catalogue the file unreadable.
+The account SpecVault runs as needs write access to the library's folder.
+
+A `.speclib` can need the DIA-NN version that made it, or a newer one. When
+DIA-NN fails, Auto-fill shows the last thing it said.
 
 ### Column spellings
 

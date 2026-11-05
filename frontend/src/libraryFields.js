@@ -53,7 +53,7 @@ export const LIBRARY_FIELDS = [
 ];
 
 export const FILTER_ONLY_FIELDS = [
-  { name: 'content_hash', label: 'Content Hash', filterType: 'text' },
+  { name: 'content_hash', label: 'Content Hash', filterType: 'text', alsoMatches: 'readable_copy_hash' },
 ];
 
 export const COMPUTED_FIELDS = [

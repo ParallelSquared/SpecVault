@@ -182,8 +182,10 @@ function App() {
         if (field.filterType === 'text') {
           // Matched against what is on screen: someone filtering paths types
           // what their own machine calls the folder, not the stored form.
-          const cellValue = (valueOf(field, lib) || '').toString().toLowerCase();
-          return cellValue.includes(filterValue.toLowerCase());
+          // alsoMatches: a second column the same filter looks in -- a
+          // .speclib is found by its .parquet copy's hash as well as its own
+          const cells = [valueOf(field, lib), field.alsoMatches && lib[field.alsoMatches]];
+          return cells.some((cell) => (cell || '').toString().toLowerCase().includes(filterValue.toLowerCase()));
         }
         if (field.filterType === 'select') return lib[field.name] === filterValue;
         if (field.filterType === 'multiselect') {
