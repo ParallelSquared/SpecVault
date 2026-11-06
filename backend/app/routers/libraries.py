@@ -1,7 +1,7 @@
 import hashlib
+import ipaddress
 import os
 import re
-import socket
 import threading
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -14,7 +14,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .. import creation_log, library_stats, models, mods, schemas, share, speclib
+from .. import creation_log, library_stats, machines, models, mods, schemas, share, speclib
 from ..database import get_db
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -861,18 +861,33 @@ def _machine_name(address: Optional[str]) -> Optional[str]:
 
     def settle(done: Future) -> None:
         try:
-            _MACHINES[address] = done.result()[0]
+            _MACHINES[address] = done.result() or address
         except Exception:
             _MACHINES[address] = address  # no name to be had; stop asking
         _PENDING.pop(address, None)
 
-    lookup = _LOOKUPS.submit(socket.gethostbyaddr, address)
+    lookup = _LOOKUPS.submit(machines.name_of, address)
     _PENDING[address] = lookup
     lookup.add_done_callback(settle)
     try:
-        return lookup.result(timeout=_LOOKUP_WAIT)[0]
+        return lookup.result(timeout=_LOOKUP_WAIT) or address
     except Exception:
         return address
+
+
+def _shown_machine(recorded: Optional[str]) -> Optional[str]:
+    """A history row's machine, by name where one can be had now.
+
+    A change recorded before the name could be found -- the first from a
+    machine, while the lookup was still under way, or any made before
+    SpecVault asked NetBIOS -- has only the address. Showing it by name
+    when it is known costs nothing: the address is kept in the row, and the
+    lookup is the same one, remembered per address."""
+    try:
+        ipaddress.ip_address(recorded or "")
+    except ValueError:
+        return recorded
+    return _machine_name(recorded)
 
 
 def _changed_from(request: Request) -> Optional[str]:
@@ -1768,7 +1783,7 @@ def get_library_history(
             recorded_at=row.recorded_at,
             event=row.event,
             changed_by=row.changed_by,
-            changed_from=row.changed_from,
+            changed_from=_shown_machine(row.changed_from),
             # A copy: the stored snapshot keeps the canonical spelling, which
             # is what makes it comparable across machines.
             data=_displayed_snapshot(row.data, flavour),

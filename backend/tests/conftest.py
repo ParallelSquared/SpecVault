@@ -17,9 +17,17 @@ import pytest  # noqa: E402
 import libraries  # noqa: E402  -- what a library looks like on disk
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import share  # noqa: E402
+from app import machines, share  # noqa: E402
 from app.database import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_netbios(monkeypatch):
+    """No NetBIOS questions sent onto the network: every change records its
+    machine, and asking a made-up address waits a second for no answer.
+    test_machine.py puts it back where it is the thing being tested."""
+    monkeypatch.setattr(machines, "netbios_name", lambda address, timeout=None: None)
 
 
 @pytest.fixture(autouse=True)
