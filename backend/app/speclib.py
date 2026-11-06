@@ -116,8 +116,11 @@ def _convert(program: str, speclib: str, copy: str) -> None:
     """
     with tempfile.TemporaryDirectory(prefix="specvault-diann-") as work:
         out = os.path.join(work, "library.parquet")
+        # A script that runs DIA-NN elsewhere -- diann/diann-docker.sh -- is
+        # run through sh, so it works whether or not git kept it executable
+        launcher = ["sh", program] if program.endswith(".sh") else [program]
         command = [
-            program,
+            *launcher,
             "--lib", speclib,
             "--out-lib", out,
             "--gen-spec-lib",
@@ -141,10 +144,18 @@ def _convert(program: str, speclib: str, copy: str) -> None:
             raise Unreadable(f"DIA-NN could not be started ({program}): {e}")
 
         if result.returncode != 0 or not os.path.isfile(out):
+            output = result.stdout + result.stderr
+            # DIA-NN names itself first thing. Output without that is from
+            # before it started -- the system's libraries, or Docker -- and
+            # nothing to do with the .speclib or which version made it.
+            if "DIA-NN" not in output:
+                raise Unreadable(
+                    f"DIA-NN could not run on this server ({program}): " + _last_lines(output)
+                )
             raise Unreadable(
                 "DIA-NN could not convert the .speclib. A .speclib can need the "
                 "DIA-NN version that made it, or a newer one. DIA-NN said: "
-                + _last_lines(result.stdout + result.stderr)
+                + _last_lines(output)
             )
 
         partial = copy + ".partial"

@@ -35,7 +35,9 @@ def diann(monkeypatch):
     def run(command, cwd=None, **kwargs):
         state["commands"].append(command)
         if state["fail"]:
-            return subprocess.CompletedProcess(command, 1, "Loading spectral library\nERROR: cannot read the library", "")
+            return subprocess.CompletedProcess(
+                command, 1, "DIA-NN 2.0.1 Academia\nLoading spectral library\nERROR: cannot read the library", "",
+            )
         given = command[command.index("--lib") + 1]
         out = command[command.index("--out-lib") + 1]
         pl.read_csv(given, separator="\t").write_parquet(out)
@@ -228,6 +230,30 @@ def test_diann_failing_says_what_diann_said(client, lib, diann):
     refused = analyze(client, lib)
     assert refused.status_code == 400
     assert "cannot read the library" in refused.json()["detail"]
+
+
+def test_diann_failing_blames_the_version(client, lib, diann):
+    diann["fail"] = True
+    assert "version" in analyze(client, lib).json()["detail"]
+
+
+def test_diann_not_starting_does_not_blame_the_version(client, lib, monkeypatch):
+    """What Ubuntu 20.04 said: DIA-NN never got as far as the .speclib."""
+    monkeypatch.setattr(speclib, "diann", lambda: "/opt/diann/diann-linux")
+    monkeypatch.setattr(speclib.subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(
+        command, 1, "", "diann-linux: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found",
+    ))
+    detail = analyze(client, lib).json()["detail"]
+    assert "could not run on this server" in detail
+    assert "GLIBC_2.34" in detail
+    assert "version that made it" not in detail
+
+
+def test_a_script_is_run_through_sh(client, lib, diann, monkeypatch):
+    """diann-docker.sh, which git on Windows may not have kept executable."""
+    monkeypatch.setattr(speclib, "diann", lambda: "/srv/specvault/diann-docker.sh")
+    analyze(client, lib)
+    assert diann["commands"][0][:2] == ["sh", "/srv/specvault/diann-docker.sh"]
 
 
 def test_diann_failing_leaves_nothing_behind(client, lib, diann):

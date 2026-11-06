@@ -465,6 +465,25 @@ The account SpecVault runs as needs write access to the library's folder.
 A `.speclib` can need the DIA-NN version that made it, or a newer one. When
 DIA-NN fails, Auto-fill shows the last thing it said.
 
+**DIA-NN in Docker.** DIA-NN's Linux builds need GLIBC 2.34 or later (Ubuntu
+22.04+). The server is on Ubuntu 20.04, so DIA-NN runs in a container from
+`backend/diann/`. The image has only the newer Ubuntu; DIA-NN itself is the
+server's own copy, mounted in. Build the image once:
+
+```bash
+docker build -t specvault-diann ~/specvault/backend/diann
+```
+
+and in `backend/.env`:
+
+```
+DIANN_PATH=/home/ip2/specvault/backend/diann/diann-docker.sh
+DIANN_BINARY=/home/ip2/Documents/diann-2.0.1/diann-linux
+```
+
+The account SpecVault runs as has to be able to use Docker (in the `docker`
+group). Updating DIA-NN means changing `DIANN_BINARY`; the image stays.
+
 ### Column spellings
 
 Every tool names these differently, and the aliases come from **JMod's own
