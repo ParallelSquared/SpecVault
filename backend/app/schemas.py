@@ -2,6 +2,14 @@ from datetime import date, datetime
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, field_validator
 
+
+def _tidy_name(v: Optional[str]) -> Optional[str]:
+    """A name without stray whitespace; a blank one is no name, so the
+    browser's fallback shows rather than an empty line."""
+    if v is None:
+        return None
+    return " ".join(v.split()) or None
+
 class ModDetail(BaseModel):
     """One modification at one site, as the library writes it.
 
@@ -34,6 +42,8 @@ class LibraryPathInfo(BaseModel):
 
 class LibraryBase(BaseModel):
     path: str
+    # Optional; the browser shows the folder and file name in its place
+    name: Optional[str] = None
     creator: str
     instrument: Optional[str] = None
     acquisition_type: Optional[str] = None
@@ -68,6 +78,11 @@ class LibraryBase(BaseModel):
             v = v[1:-1].strip()
         return v
 
+    @field_validator('name')
+    @classmethod
+    def tidy_name(cls, v: Optional[str]) -> Optional[str]:
+        return _tidy_name(v)
+
 class LibraryCreate(LibraryBase):
     # Save a library whose file could not be read, having been told what that
     # costs. Defaults to false so the refusal has to be answered rather than
@@ -76,7 +91,14 @@ class LibraryCreate(LibraryBase):
 
 class LibraryUpdate(BaseModel):
     path: Optional[str] = None
+    name: Optional[str] = None
     creator: Optional[str] = None
+
+    @field_validator('name')
+    @classmethod
+    def tidy_name(cls, v: Optional[str]) -> Optional[str]:
+        return _tidy_name(v)
+
     instrument: Optional[str] = None
     acquisition_type: Optional[str] = None
     vendor: Optional[str] = None

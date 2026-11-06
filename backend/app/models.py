@@ -130,6 +130,9 @@ class Library(Base):
     # library_paths.path, so adding the same file again finds the deleted entry
     # rather than making a second one -- and is offered it back.
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # What people call it, shown above the path when browsing. Optional: the
+    # browser falls back on the library's folder and file name.
+    name = Column(String, nullable=True)
     creator = Column(String, nullable=False)
     instrument = Column(String, nullable=True)
     acquisition_type = Column(String, nullable=True)

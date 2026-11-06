@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "C:\\Users\\zcohe\\Data\\SpecLibs\\backend\\venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8010"],
+      "cwd": "C:\\Users\\zcohe\\Data\\SpecLibs\\backend",
+      "port": 8010,
+      "autoPort": false
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "C:\\Users\\zcohe\\Data\\SpecLibs\\frontend",
+      "port": 5173
+    }
+  ]
+}

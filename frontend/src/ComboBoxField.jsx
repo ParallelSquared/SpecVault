@@ -42,7 +42,8 @@ function ComboBoxField({ label, value, options, onChange, required }) {
 
   return (
     <select value={value} onChange={handleSelectChange} required={required}>
-      <option value="">-- select --</option>
+      {/* Blank: nothing chosen reads as nothing, and picking it clears one */}
+      <option value="">{' '}</option>
       {options.map((opt) => (
         <option key={opt} value={opt}>{opt}</option>
       ))}

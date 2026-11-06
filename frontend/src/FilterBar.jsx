@@ -9,7 +9,7 @@ import { useWho } from './useWho';
 // down the page whatever row they are in. auto-fill rather than auto-fit: a
 // short row keeps its columns the width of a full one instead of stretching.
 const GRID = {
-  display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '0.6rem 0.75rem',
+  display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '0.6rem 0.75rem',
 };
 const FILL = { width: '100%', boxSizing: 'border-box' };
 const SECTION_TITLE = {

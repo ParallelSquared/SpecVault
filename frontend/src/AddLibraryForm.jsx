@@ -5,6 +5,7 @@ import MultiComboBoxField from './MultiComboBoxField';
 import { libraryUrl, changeHeaders, whoAmI } from './api';
 import { NamePicker, RecordingAs } from './WhoAmI';
 import { useWho } from './useWho';
+import { folderAndFile } from './libraryName';
 
 // Fields the server works out from the file on save are not the form's to send
 const FORM_FIELDS = LIBRARY_FIELDS.filter((f) => f.form !== false);
@@ -420,6 +421,10 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
             onChange={(e) => handleChange(field.name, e.target.value)}
             onBlur={() => handleBlur(field.name)}
             required={field.required}
+            // Left blank, a library is called by its folder and file: shown
+            // greyed in the empty box, as what it will be called
+            placeholder={field.name === 'name' && formData.path
+              ? folderAndFile(cleanPath(formData.path)) : undefined}
             style={{ flex: 1, minWidth: 0 }}
           />
           {autoFills[field.name] && (
@@ -497,7 +502,8 @@ function AddLibraryForm({ onLibraryAdded, fieldOptions, library, onCancel }) {
           value={formData[field.name]}
           onChange={(e) => handleChange(field.name, e.target.value)}
         >
-          <option value="">-- unknown --</option>
+          {/* Blank for not known, like the other dropdowns */}
+          <option value="">{' '}</option>
           <option value="true">{field.trueLabel || 'Yes'}</option>
           <option value="false">{field.falseLabel || 'No'}</option>
         </select>

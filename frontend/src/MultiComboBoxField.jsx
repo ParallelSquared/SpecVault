@@ -37,6 +37,17 @@ function MultiComboBoxField({ label, values, options, onChange, pickExisting = t
   };
 
   const availableOptions = options.filter((o) => !selected.includes(o));
+  const listId = `options-${label.replace(/\W+/g, '-').toLowerCase()}`;
+
+  // One box for both: typing offers the values other libraries already use,
+  // and picking one adds it at once. Anything else is added on Enter or on
+  // leaving the box, as a new value.
+  const handleInput = (e) => {
+    const typed = e.target.value;
+    const picked = e.nativeEvent.inputType === 'insertReplacementText' || !e.nativeEvent.inputType;
+    if (picked && availableOptions.includes(typed)) addValue(typed);
+    else setInputValue(typed);
+  };
 
   return (
     <div>
@@ -56,34 +67,26 @@ function MultiComboBoxField({ label, values, options, onChange, pickExisting = t
         ))}
       </div>}
 
-      {/* Side by side, together no wider than any other field */}
-      <div style={{ display: 'flex', gap: '4px' }}>
-        {pickExisting && (
-          <select
-            value=""
-            onChange={(e) => { if (e.target.value) addValue(e.target.value); }}
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            <option value="" disabled>-- add existing --</option>
-            {availableOptions.map((opt) => (
-              <option key={opt} value={opt}>{opt}</option>
-            ))}
-          </select>
-        )}
-        <input
-          type="text"
-          placeholder={`Add new ${label.toLowerCase()}...`}
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onPaste={handlePaste}
-          title="Paste several at once, one per line"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); addValue(inputValue); }
-          }}
-          onBlur={() => { if (inputValue) addValue(inputValue); }}
-          style={{ flex: 1, minWidth: 0 }}
-        />
-      </div>
+      <input
+        type="text"
+        list={pickExisting ? listId : undefined}
+        value={inputValue}
+        onChange={handleInput}
+        onPaste={handlePaste}
+        title={pickExisting
+          ? 'Type to add, or pick one other libraries use. Paste several at once, one per line'
+          : 'Type and press Enter to add. Paste several at once, one per line'}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); addValue(inputValue); }
+        }}
+        onBlur={() => { if (inputValue) addValue(inputValue); }}
+        style={{ width: '100%', boxSizing: 'border-box' }}
+      />
+      {pickExisting && (
+        <datalist id={listId}>
+          {availableOptions.map((opt) => <option key={opt} value={opt} />)}
+        </datalist>
+      )}
     </div>
   );
 }

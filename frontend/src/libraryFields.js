@@ -7,13 +7,18 @@ export const LIBRARY_FIELDS = [
   // is what identifies the library, `display_path` is the same path written
   // the way the machine asking for it writes paths. Everything the user reads,
   // filters or copies uses the second.
-  { name: 'path', label: 'Path', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true, displayAs: 'display_path' },
+  // columnLabel: the table's header for it, when not the label. The Path column
+  // shows the library's Name (or folder and file) rather than the path, so it
+  // is headed Library -- and filtering it looks in the name too (alsoMatches).
+  { name: 'path', label: 'Path', columnLabel: 'Library', type: 'text', required: true, filterType: 'text', group: 'Core Info', primary: true, wide: true, displayAs: 'display_path', alsoMatches: 'name' },
   { name: 'creation_log_path', label: 'Path to Creation Log', type: 'text', required: false, filterType: 'text', group: 'Core Info', primary: false, wide: true, file: true, displayAs: 'display_creation_log_path' },
   { name: 'creator', label: 'Creator', type: 'combobox', required: true, filterType: 'select', group: 'Core Info', primary: true },
   { name: 'project', label: 'Project', type: 'combobox', required: false, filterType: 'select', group: 'Core Info', primary: false },
   { name: 'tags', label: 'Tags', type: 'multicombobox', required: true, filterType: 'multiselect', group: 'Core Info', primary: true },
-  // Who made it and when, together
-  { name: 'date_generated', label: 'Date Generated', type: 'date', required: false, filterType: null, group: 'Core Info', primary: false },
+  // Name and Date Generated share a row, the name two thirds of it.
+  // grid: false -- shown in the Library column already, not again in the details
+  { name: 'name', label: 'Name', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false, span: 4, grid: false },
+  { name: 'date_generated', label: 'Date Generated', type: 'date', required: false, filterType: null, group: 'Core Info', primary: false, span: 2 },
   // form: false -- counted from the file on save and shown when browsing; never typed in
   { name: 'precursors', label: 'Precursors', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false, form: false },
   { name: 'proteins', label: 'Proteins', type: 'text', required: false, filterType: null, group: 'Core Info', primary: false, form: false },
@@ -33,9 +38,6 @@ export const LIBRARY_FIELDS = [
     required: false, filterType: 'boolean', trueLabel: 'Yes', falseLabel: 'No',
     group: 'Method Info', subgroup: 'Search', primary: false,
   },
-  { name: 'instrument', label: 'Instrument', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
-  { name: 'acquisition_type', label: 'Acquisition Type', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
-  { name: 'vendor', label: 'Vendor', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
   { name: 'in_silico', label: 'In-Silico', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Library Generation', primary: false },
   { name: 'finetuning', label: 'Finetuning', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Library Generation', primary: false },
   {
@@ -43,6 +45,9 @@ export const LIBRARY_FIELDS = [
     required: false, filterType: 'boolean', trueLabel: 'On', falseLabel: 'Off',
     group: 'Method Info', subgroup: 'Library Generation', primary: false,
   },
+  { name: 'instrument', label: 'Instrument', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
+  { name: 'acquisition_type', label: 'Acquisition Type', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
+  { name: 'vendor', label: 'Vendor', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
 
   // --- Sample Info ---
   { name: 'species', label: 'Species', type: 'combobox', required: false, filterType: 'select', group: 'Sample Info', primary: true },
@@ -95,28 +100,33 @@ export const ME_FILTER = '__me__';
 export const valueOf = (field, lib) => lib[field.displayAs ?? field.name] ?? lib[field.name];
 
 export const ALL_DISPLAY_FIELDS = [...LIBRARY_FIELDS, ...COMPUTED_FIELDS];
-export const PRIMARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => f.primary);
-export const SECONDARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => !f.primary);
+// The table's columns, in order: separate from the fields' own order, which
+// is the Add form's -- there Project follows Creator, here it comes first.
+const COLUMNS = ['path', 'project', 'creator', 'tags', 'protease', 'species', 'updated_at'];
+const BY_NAME = Object.fromEntries(ALL_DISPLAY_FIELDS.map((f) => [f.name, f]));
+export const PRIMARY_FIELDS = COLUMNS.map((name) => BY_NAME[name]);
+export const SECONDARY_FIELDS = ALL_DISPLAY_FIELDS.filter((f) => !COLUMNS.includes(f.name));
 // The expanded row's grid: no paths, and full-width fields after the rest
+const IN_GRID = SECONDARY_FIELDS.filter((f) => !f.file && f.grid !== false);
 export const GRID_FIELDS = [
-  ...SECONDARY_FIELDS.filter((f) => !f.file && !f.wide),
-  ...SECONDARY_FIELDS.filter((f) => !f.file && f.wide),
+  ...IN_GRID.filter((f) => !f.wide),
+  ...IN_GRID.filter((f) => f.wide),
 ];
 
 // The Add form's sections, in order
 export const FIELD_GROUPS = ['Core Info', 'Sample Info', 'Method Info', 'Files & Notes'];
 
 // The filters always shown: the table's own columns, and who uses it
-export const TOP_FILTERS = ['path', 'creator', 'tags', 'protease', 'species', 'starred_by'];
+export const TOP_FILTERS = ['path', 'project', 'creator', 'tags', 'protease', 'species', 'starred_by'];
 
 // The rest, under More filters, in sections of their own rather than the Add
 // form's: filtering, Path to Creation Log is a path to find, not core info.
 // A filterable field left out of every list here is not lost -- it turns up
 // under "Other" -- so adding a field does not mean remembering this list.
 export const FILTER_SECTIONS = [
-  ['Project & Sample', ['project', 'cell_types', 'tissues']],
+  ['Sample', ['cell_types', 'tissues']],
   ['Method', ['carbamidomethylated', 'ptms', 'search_algorithm', 'software_version', 'mbr',
-    'instrument', 'acquisition_type', 'vendor', 'in_silico', 'finetuning', 'protein_inference',
+    'in_silico', 'finetuning', 'protein_inference', 'instrument', 'acquisition_type', 'vendor',
     'ion_mobility']],
   ['Files & Notes', ['path_exists', 'file_format', 'creation_log_path', 'fasta_path', 'notes',
     'content_hash']],

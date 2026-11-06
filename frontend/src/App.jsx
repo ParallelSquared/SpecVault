@@ -13,6 +13,7 @@ import {
   PRIMARY_FIELDS, GRID_FIELDS, ALL_FILTERABLE_FIELDS, COMPUTED_FIELDS, ME_FILTER, valueOf,
 } from './libraryFields';
 import { formatBytes, formatDate } from './formatters';
+import { titleOf } from './libraryName';
 import { libraryUrl } from './api';
 
 
@@ -27,16 +28,21 @@ const MAX_ROWS = 5000;
 // the library added most recently, in either direction, so something new is
 // never buried among its equals.
 const SORTS = [
-  { value: 'stars', label: 'Stars', key: (lib) => lib.stars },
+  // explain: the tooltip, saying what is being sorted on
+  { value: 'stars', label: 'Stars', key: (lib) => lib.stars,
+    explain: 'How many people have starred the library as one they use' },
   // How big a library is. One saved without being readable has no count, and
   // stays at the bottom whichever way round rather than reading as empty.
-  { value: 'precursors', label: 'Precursors', key: (lib) => lib.precursors ?? null },
-  { value: 'added', label: 'Date Added', key: (lib) => lib.id },
+  { value: 'precursors', label: 'Precursors', key: (lib) => lib.precursors ?? null,
+    explain: 'How many precursors the library holds, decoys not counted' },
+  { value: 'added', label: 'Date Added', key: (lib) => lib.id,
+    explain: 'When the library was added to SpecVault' },
   // The Modified column: when the library file was last changed on the share,
   // not when its entry was edited here. A library whose file cannot be found
   // has no time, and stays at the bottom whichever way round.
   { value: 'modified', label: 'Date Modified',
-    key: (lib) => (lib.updated_at ? new Date(lib.updated_at).getTime() : null) },
+    key: (lib) => (lib.updated_at ? new Date(lib.updated_at).getTime() : null),
+    explain: 'When the library file was last changed on the share (the Modified column)' },
 ];
 
 const newestAdded = (a, b) => b.id - a.id;
@@ -70,6 +76,18 @@ function renderCellValue(field, lib) {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (value === null || value === undefined || value === '') return '—';
   return value;
+}
+
+const ONE_LINE = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
+// The Library column: the name alone. Where the library is, is under Show
+// files when the row is opened, and in the tooltip here.
+function LibraryCell({ lib }) {
+  return (
+    <div title={lib.display_path || lib.path} style={{ ...ONE_LINE, fontWeight: 500, color: 'var(--text-h)' }}>
+      {titleOf(lib)}
+    </div>
+  );
 }
 
 function App() {
@@ -253,7 +271,7 @@ function App() {
             <h2>Libraries ({filteredLibraries.length} of {totalCount})</h2>
             <div style={{ fontSize: '0.8rem', color: '#555' }}>
               Sort:{' '}
-              {SORTS.map(({ value, label }) => {
+              {SORTS.map(({ value, label, explain }) => {
                 const active = sort.by === value;
                 return (
                   <button
@@ -261,7 +279,7 @@ function App() {
                     type="button"
                     onClick={() => chooseSort(value)}
                     aria-pressed={active}
-                    title={active ? 'Click to reverse' : `Sort by ${label.toLowerCase()}`}
+                    title={explain}
                     style={{ fontSize: '0.8rem', marginLeft: '0.25rem', fontWeight: active ? 'bold' : 'normal' }}
                   >
                     {label}{active && (sort.descending ? ' ↓' : ' ↑')}
@@ -288,14 +306,14 @@ function App() {
                     title={field.title ?? field.label}
                     style={{
                       padding: '0.5rem',
-                      width: field.name === 'path' ? '50%' : `${50 / (PRIMARY_FIELDS.length - 1)}%`,
+                      width: field.name === 'path' ? '36%' : `${64 / (PRIMARY_FIELDS.length - 1)}%`,
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                       textAlign: 'center',
                     }}
                   >
-                    {field.label}
+                    {field.columnLabel ?? field.label}
                   </th>
                 ))}
                 <th style={{ width: '3.5rem' }} title="Stars: how many people use it">★</th>
@@ -307,7 +325,7 @@ function App() {
                 <Fragment key={lib.id}>
                   <tr
                     onClick={() => setExpandedId(expandedId === lib.id ? null : lib.id)}
-                    style={{ borderBottom: '1px solid #eee', cursor: 'pointer' }}
+                    style={{ borderBottom: '1px solid #eee', cursor: 'pointer', fontSize: '1.0625rem' }}
                   >
                     <td style={{ padding: '0.5rem', textAlign: 'center' }}>
                       {expandedId === lib.id ? '▾' : '▸'}
@@ -315,7 +333,7 @@ function App() {
                     {PRIMARY_FIELDS.map((field) => (
                       <td
                         key={field.name}
-                        title={String(renderCellValue(field, lib))}
+                        title={field.name === 'path' ? undefined : String(renderCellValue(field, lib))}
                         style={{
                           padding: '0.5rem',
                           overflow: 'hidden',
@@ -325,7 +343,7 @@ function App() {
                           textAlign: field.name === 'path' ? 'left' : 'center',
                         }}
                       >
-                        {renderCellValue(field, lib)}
+                        {field.name === 'path' ? <LibraryCell lib={lib} /> : renderCellValue(field, lib)}
                       </td>
                     ))}
                     <td style={{ padding: '0.5rem 0', textAlign: 'center' }}>
