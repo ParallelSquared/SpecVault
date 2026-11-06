@@ -142,6 +142,7 @@ class Library(Base):
     software_version = Column(String, nullable=True)   # e.g. "2.5.0", from the creation log
     date_generated = Column(Date, nullable=True)       # when the library was built
     mbr = Column(Boolean, nullable=True)               # built with match-between-runs
+    protein_inference = Column(Boolean, nullable=True) # DIA-NN's protein inference was on
     source_runs = Column(JSON, nullable=True)          # list[str], the runs it was built from
     notes = Column(Text, nullable=True)
     cell_types = Column(JSON, nullable=True)      # list[str]

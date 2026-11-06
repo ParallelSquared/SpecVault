@@ -80,6 +80,8 @@ const withLogFields = (prev, body) => ({
   fasta_path: body.fasta_path ?? prev.fasta_path,
   source_runs: body.source_runs && body.source_runs.length ? body.source_runs : prev.source_runs,
   mbr: body.mbr === null || body.mbr === undefined ? prev.mbr : String(body.mbr),
+  protein_inference: body.protein_inference === null || body.protein_inference === undefined
+    ? prev.protein_inference : String(body.protein_inference),
   vendor: body.vendor ?? prev.vendor,
 });
 

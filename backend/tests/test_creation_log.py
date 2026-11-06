@@ -69,6 +69,21 @@ def test_without_reanalyse_there_is_no_mbr(tmp_path):
     assert creation_log.read(write_log(mirrored(tmp_path), command, RUNS)).mbr is False
 
 
+def test_protein_inference_is_on_by_default(tmp_path):
+    """DIA-NN infers protein groups unless told not to."""
+    assert creation_log.read(write_log(mirrored(tmp_path), COMMAND, RUNS)).protein_inference is True
+
+
+def test_no_prot_inf_means_protein_inference_was_off(tmp_path):
+    """What unticking Protein inference in the GUI adds to the command."""
+    for command in (COMMAND + " --no-prot-inf", COMMAND.replace(" --reanalyse", " --no-prot-inf --reanalyse")):
+        assert creation_log.read(write_log(mirrored(tmp_path), command, RUNS)).protein_inference is False
+
+
+def test_a_jmod_log_does_not_say(tmp_path):
+    assert creation_log.read(jmod_log(jmod_results(tmp_path))).protein_inference is None
+
+
 def test_runs_given_with_dir_come_from_the_loading_lines(tmp_path):
     """--dir names a folder, not runs; the runs show up as they are loaded."""
     command = (r"diann.exe --dir L:\JMod\Data --out L:\JMod\DIANN\lib_mbr\report.parquet"

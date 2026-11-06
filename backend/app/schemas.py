@@ -46,6 +46,7 @@ class LibraryBase(BaseModel):
     software_version: Optional[str] = None
     date_generated: Optional[date] = None
     mbr: Optional[bool] = None
+    protein_inference: Optional[bool] = None
     source_runs: Optional[List[str]] = None
     notes: Optional[str] = None
     cell_types: Optional[List[str]] = None
@@ -87,6 +88,7 @@ class LibraryUpdate(BaseModel):
     software_version: Optional[str] = None
     date_generated: Optional[date] = None
     mbr: Optional[bool] = None
+    protein_inference: Optional[bool] = None
     source_runs: Optional[List[str]] = None
     notes: Optional[str] = None
     cell_types: Optional[List[str]] = None
@@ -206,6 +208,7 @@ class LogResponse(BaseModel):
     fasta_path: Optional[str] = None
     source_runs: List[str] = []
     mbr: Optional[bool] = None
+    protein_inference: Optional[bool] = None
     vendor: Optional[str] = None  # from the source runs' file types
     warning: Optional[str] = None  # e.g. "file read but some columns missing"
 

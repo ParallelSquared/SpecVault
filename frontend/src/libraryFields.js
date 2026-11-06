@@ -36,8 +36,13 @@ export const LIBRARY_FIELDS = [
   { name: 'instrument', label: 'Instrument', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
   { name: 'acquisition_type', label: 'Acquisition Type', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
   { name: 'vendor', label: 'Vendor', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Acquisition', primary: false },
-  { name: 'in_silico', label: 'In-Silico', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Prediction', primary: false },
-  { name: 'finetuning', label: 'Finetuning', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Prediction', primary: false },
+  { name: 'in_silico', label: 'In-Silico', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Library Generation', primary: false },
+  { name: 'finetuning', label: 'Finetuning', type: 'combobox', required: false, filterType: 'select', group: 'Method Info', subgroup: 'Library Generation', primary: false },
+  {
+    name: 'protein_inference', label: 'Protein Inference', type: 'boolean',
+    required: false, filterType: 'boolean', trueLabel: 'On', falseLabel: 'Off',
+    group: 'Method Info', subgroup: 'Library Generation', primary: false,
+  },
 
   // --- Sample Info ---
   { name: 'species', label: 'Species', type: 'combobox', required: false, filterType: 'select', group: 'Sample Info', primary: true },
@@ -111,7 +116,8 @@ export const TOP_FILTERS = ['path', 'creator', 'tags', 'protease', 'species', 's
 export const FILTER_SECTIONS = [
   ['Project & Sample', ['project', 'cell_types', 'tissues']],
   ['Method', ['carbamidomethylated', 'ptms', 'search_algorithm', 'software_version', 'mbr',
-    'instrument', 'acquisition_type', 'vendor', 'in_silico', 'finetuning', 'ion_mobility']],
+    'instrument', 'acquisition_type', 'vendor', 'in_silico', 'finetuning', 'protein_inference',
+    'ion_mobility']],
   ['Files & Notes', ['path_exists', 'file_format', 'creation_log_path', 'fasta_path', 'notes',
     'content_hash']],
 ];

@@ -2,7 +2,7 @@
 
 A log is treated as describing the library being added: which software built
 it, which version, when, from which FASTA and which runs, and whether
-match-between-runs was on. Nothing in it is matched against the library's own
+match-between-runs and protein inference were on. Nothing in it is matched against the library's own
 path. Two formats are read:
 
 * DIA-NN's report.log.txt, which sits beside the library it wrote.
@@ -54,6 +54,8 @@ class LogFacts(NamedTuple):
     fasta: List[str]
     runs: List[str]
     mbr: bool
+    # Whether DIA-NN grouped proteins itself. None where the log cannot say.
+    protein_inference: Optional[bool] = None
 
 
 def read(path: str) -> Optional[LogFacts]:
@@ -144,6 +146,9 @@ def _read_diann(path: str, lines: List[str]) -> LogFacts:
         # Each run is loaded once per pass, so with MBR it is listed twice
         runs=list(dict.fromkeys(runs)),
         mbr=any(name == "reanalyse" for name, _ in flags),
+        # On unless switched off: unticking Protein inference in the GUI adds
+        # --no-prot-inf, and DIA-NN then keeps the library's protein groups
+        protein_inference=not any(name == "no-prot-inf" for name, _ in flags),
     )
 
 

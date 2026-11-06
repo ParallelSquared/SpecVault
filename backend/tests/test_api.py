@@ -562,6 +562,7 @@ def test_auto_fill_reads_the_log_beside_the_library(client, tmp_path):
     assert body["fasta_path"] == str(tmp_path / "human.fasta")
     assert body["source_runs"] == [str(tmp_path / "run1.raw")]
     assert body["mbr"] is True
+    assert body["protein_inference"] is True
     assert body["vendor"] == "Thermo"
 
 
@@ -606,6 +607,18 @@ def test_the_log_fields_are_saved(client, tmp_path):
     }).json()
     assert (body["software_version"], body["date_generated"], body["mbr"]) == ("2.5.0", "2026-09-29", True)
     assert body["source_runs"] == ["D:/runs/run1.raw", "D:/runs/run2.raw"]
+
+
+def test_protein_inference_off_is_auto_filled_and_saved(client, tmp_path):
+    log = write_diann_log(tmp_path / "report.log.txt")
+    log.write_text(log.read_text(encoding="utf-8").replace(" --reanalyse", " --no-prot-inf"), encoding="utf-8")
+    body = client.post("/libraries/analyze-log", json={"path": str(log)}).json()
+    assert body["protein_inference"] is False
+    saved = client.post("/libraries/", json={
+        "path": str(write_mods(tmp_path / "lib.tsv", "AC(UniMod:4)DEK")), "creator": "ZC",
+        "protein_inference": "false",
+    }).json()
+    assert saved["protein_inference"] is False
 
 
 def test_vendors_are_saved_and_offered_as_options(client, make_library):

@@ -1263,6 +1263,7 @@ def _read_log(path: Optional[str], given: bool) -> Tuple[dict, Optional[str]]:
         "fasta_path": "; ".join(log.fasta) or None,
         "source_runs": log.runs,
         "mbr": log.mbr,
+        "protein_inference": log.protein_inference,
         "vendor": creation_log.vendor(log.runs),
     }, None
 
